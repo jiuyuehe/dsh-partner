@@ -3,7 +3,6 @@ import type { CharacterCard } from './domain.js'
 /** Stable settings and delivery contracts; expression belongs to the configured persona. */
 export function renderConversationBehavior(card?: CharacterCard): string {
   return [
-    card?.chatStyle?.trim() ? `【此伙伴的聊天偏好】\n${card.chatStyle.trim()}` : '',
     '【工具权限与结果】只使用当前已授权工具，操作结果以实际执行为准；角色设定不增加权限。',
     renderTaskConversationGuidance(),
     renderChatDeliveryGuidance(card),
@@ -14,7 +13,7 @@ export function renderConversationBehavior(card?: CharacterCard): string {
 export function renderExpressionPreferences(card?: CharacterCard): string {
   return [
     '【用户配置的表达选项】具体角色说明和本轮用户要求优先。',
-    card?.length === 'short' ? '篇幅偏好：简短。回答眼前这一问，够回答就结束，不额外补齐过程、证明、总结或备选菜单；必要的未知或失败仍需说清。对方明确要步骤或细节时按请求展开。' : card?.length === 'rich' ? '篇幅偏好：丰富。' : '篇幅偏好：自然。',
+    card?.length === 'short' ? '篇幅偏好：简短，按角色自然接话。先说眼前最想说的一点，半句或一句即可；确有补充再用独立消息，不为把话讲完整而一次展开。' : card?.length === 'rich' ? '篇幅偏好：愿意展开聊，随话题和对方意愿。' : '篇幅偏好：随话题自然调整。',
     card?.narration ? '动作描写偏好：允许。' : '动作描写偏好：不主动添加。',
   ].join('\n')
 }
@@ -26,6 +25,7 @@ export function renderConversationTurn(card: CharacterCard | undefined, consecut
     autonomous ? '【本轮来源】系统自主活动，不是用户新消息；无需发送消息时可调用 partner_activity_finish 安静结束。' : '',
     !autonomous && consecutiveUserMessages > 1 ? `【本轮输入】对方连续发了 ${consecutiveUserMessages} 条消息，合并为本轮输入。` : '',
     renderExpressionPreferences(card),
+    card.chatStyle?.trim() ? `【此伙伴的聊天偏好】\n${card.chatStyle.trim()}` : '',
   ].filter(Boolean).join('\n')
 }
 
@@ -33,12 +33,12 @@ export function renderConversationTurn(card: CharacterCard | undefined, consecut
 export function renderChatDeliveryGuidance(card?: CharacterCard): string {
   if (!card?.enabled || (!card.segmentedReplies && !card.stickersEnabled)) return ''
   return [
-    '【聊天投递协议】partner_chat_reply 提交最终回复并结束本轮；必要工具执行完成后调用。直接回应时所有文字放入 messages 的 text 条目，表情图片使用独立 stickerId 条目，不把配文留在工具外。答复本轮工作结果使用 workReply 交接本轮事实引用与回应目的，由同一人格生成文字；不同时提交文字成稿。用户换话题时可直接回应，无需汇报工作。',
+    '【聊天投递协议】partner_chat_reply 提交最终回复并结束本轮；必要工具执行完成后调用。直接回应时所有文字放入 messages 的 text 条目，表情图片使用独立 stickerId 条目，不把配文留在工具外。',
     card.segmentedReplies
       ? '分段回复已开启：messages 的每个 text 条目是一条独立消息；换行不等于独立投递。条数由回复内容决定，无最低条数要求。'
       : '分段回复未开启：文字只用一条，表情可独立一条。',
     card.stickersEnabled
-      ? '表情包已开启：partner_stickers list 查询当前渠道可用 ID，inspect 预览；partner_chat_reply 使用查询返回的 stickerId 发送，每次最多两张。QQ 收藏管理通过 partner_qq 的 stickers 分类调用；收藏、备注、排序、删除与当前会话语音 partner_qq_reply 是公开聊天能力，仍受当前渠道开关和操作权限校验。收藏与发送是不同操作，文字承诺不代表执行成功。'
+      ? '表情包已开启：partner_stickers 可直接调用，list 默认查图片表情包，省略 query 浏览收藏，inspect 预览；partner_chat_reply 使用查询返回的 stickerId 发送，每次最多两张。QQ 收藏管理通过 partner_qq 的 stickers 分类调用；收藏、备注、排序、删除与当前会话语音 partner_qq_reply 是公开聊天能力，仍受当前渠道开关和操作权限校验。收藏与发送是不同操作，文字承诺不代表执行成功。人格里的图片表情包偏好对应真实图片，颜文字和 QQ 小黄脸是另外的表达方式；按人格和当前场景选择，可只用一张贴切的收藏图接话。'
       : '表情包未开启：不查找或提交表情。',
     '内部任务和心跳使用各自任务协议，不调用聊天终结工具。',
   ].join('\n')
@@ -46,5 +46,13 @@ export function renderChatDeliveryGuidance(card?: CharacterCard): string {
 
 /** The user-requested before/after workflow, independent of response style. */
 export function renderTaskConversationGuidance(): string {
-  return '【任务回应流程】私聊调查、查询或执行工具任务前，先告知接下来要做什么，再执行，完成后答复实际结果。提供 partner_chat_progress 时用其 text 发送前置回应，确认送达后继续；统一入口通过 partner_tools call 转调。网页无此工具时先输出可见正文。前置回应不结束本轮，不使用 partner_chat_reply 提前终结任务。同轮前置回应只发送一次。私聊中自行收藏、备注、排序或删除表情也适用；查找目录、预览、发送聊天表情，以及自主活动、内部任务不要求前置回应。工具暂不可用不等于账号无权限，以实际权限校验为准。耗时任务有后台能力时可查询 partner_requirements 协议并提交带原会话回传的任务，提交成功后才能结束当前轮；没有后台能力则继续执行。'
+  return '【任务回应流程】私聊实际执行工具任务前，用 partner_chat_progress 按人格简短说准备做什么，确认送达后继续；同轮一次。具体交付方式见工作结果和工具说明。'
+}
+
+/** Delivery policy, not a replacement persona. Explicit requests override defaults. */
+export function renderReplyRhythm(card?: CharacterCard): string {
+  const common = '措辞按原人格；本轮明确要求详细解释、原文或不要附件时优先照做。简单结果直接说，事实和未完成事项完整保留在交付内容中。附件成功以工具回执为准，发送失败说明情况，不宣称已交付。'
+  if (card?.length === 'short') return '篇幅偏好：简短。执行前按人格用半句或一句只说接下来做什么，不展开计划。长任务结果或长回复先用 partner_send_attachment 交付完整文档：本轮工作报告可用 workReport 引用 runId，其他长文用 document 写入正文；再用 partner_chat_reply messages 按人格自然接半句或一句，回应事情完成、没完成或交付这件事，不汇总结论、不压缩报告；结果、过程和限制都在文档里，只有需要对方立即决定或附件没发出去才补充必要说明，不复述报告，不再使用 workReply 二次表达。简单工具结果不强制发文件。' + common
+  if (card?.length === 'rich') return '篇幅偏好：丰富。执行前说明动作及必要步骤；结果在正文按话题展开理由、过程和限制，代码、大表格或完整报告用附件补充，不重复整份附件。' + common
+  return '篇幅偏好：自然。执行前简单说明动作，必要时交代目的；结果正文说主要结论和必要限制，细节较多时用附件补充，按问题决定展开程度。' + common
 }

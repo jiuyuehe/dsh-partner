@@ -3,7 +3,7 @@ import type { ChannelSession, WeixinChannel } from '../domain.js'
 export interface NativeEmoji { provider:string; id:string; channelId:string; accountId:string; label:string; previewUrl?:string }
 export type ResolvedSticker = {item:Sticker;data:Buffer;native?:never} | {item:Sticker;native:NativeEmoji;data?:never}
 export interface StickerAdapter {
-  list(owner:string,query:string,signal:AbortSignal):Promise<Sticker[]>
+  list(owner:string,query:string,signal:AbortSignal,kind?:'image'|'all'):Promise<Sticker[]>
   resolve(owner:string,id:string,signal:AbortSignal):Promise<ResolvedSticker>
 }
 /** Default library remains usable without any channel. Providers override only their route. */

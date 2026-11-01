@@ -193,3 +193,46 @@ test('guest collection works without private capabilities but cannot access othe
  f.channel.qq.enabledActions=['fetch_custom_face_detail'];f.state.pairings[0].status='blocked'
  await assert.rejects(invoke({action:'call',operation:'fetch_custom_face_detail'}));assert.equal(calls.length,count)
 })
+
+function publicConversation(group=true){
+ const f=fixture(),route=f.state.sessions[0]
+ Object.assign(route,{id:'current',kind:'channel',channelId:'qq',userId:group?'group:493531768:834426963':'834426963',inboundMessageIds:['u']})
+ f.channel.qq.identityBinding={enabled:true,qqIds:['12345678']};f.channel.qq.autonomousActions=false
+ f.channel.qq.groupIds.push('99887766');f.channel.qq.autonomousGroupIds=['493531768','99887766']
+ f.exec.agent.session.snapshotEvents=()=>[{type:'user/message',data:{id:'u',source:{kind:'user'},content:[]}}]
+ return f
+}
+test('public group queries work without private switch and cannot read another allowed group',async()=>{
+ const f=publicConversation()
+ const listed=await f.tool.execute({action:'list',category:'groups'},f.exec)
+ assert.deepEqual(listed.channels[0].actions.map(a=>a.id).sort(),['get_group_info','get_group_member_info','get_group_member_list'].sort())
+ const described=await f.tool.execute({action:'describe',operation:'get_group_member_list'},f.exec)
+ assert.deepEqual(described.targets.groups,['493531768']);assert.deepEqual(described.targets.privatePeers,[])
+ await f.call('get_group_member_list',{group_id:493531768});assert.equal(f.requests.length,1)
+ await assert.rejects(f.call('get_group_member_list',{group_id:99887766}),/仅限当前会话/);assert.equal(f.requests.length,1)
+ await assert.rejects(f.call('set_group_card',{group_id:493531768,user_id:834426963,card:'x'}));assert.equal(f.requests.length,1)
+ f.channel.qq.enabledActions=[];await assert.rejects(f.call('get_group_info',{group_id:493531768}));assert.equal(f.requests.length,1)
+})
+test('public reactions resolve real message peer and deny another group even when both groups are allowed',async()=>{
+ const f=publicConversation();f.setResponse({message_type:'group',group_id:99887766})
+ await assert.rejects(f.call('set_msg_emoji_like',{message_id:1,emoji_id:'14'}),/仅限当前会话/)
+ assert.deepEqual(f.requests.map(r=>r.action),['get_msg']);assert.equal(f.channel.qqActivity,undefined)
+ f.requests.length=0;f.setResponse({message_type:'group',group_id:493531768})
+ await f.call('set_msg_emoji_like',{message_id:1,emoji_id:'14'})
+ assert.deepEqual(f.requests.map(r=>r.action),['get_msg','set_msg_emoji_like'])
+ await f.call('set_msg_emoji_like',{message_id:1,emoji_id:'14'});assert.equal(f.requests.filter(r=>r.action==='set_msg_emoji_like').length,1)
+})
+test('public private-chat reactions cannot cross peers or obtain group query targets',async()=>{
+ const f=publicConversation(false);f.state.pairings.push({channelId:'qq',userId:'99887766',status:'approved'})
+ f.setResponse({message_type:'private',sender:{user_id:'99887766'}})
+ await assert.rejects(f.call('get_msg_emoji_likes',{message_id:1}),/仅限当前会话/)
+ f.setResponse({message_type:'private',sender:{user_id:'12345678'},target_id:'834426963'})
+ await f.call('get_msg_emoji_likes',{message_id:1})
+ await assert.rejects(f.tool.execute({action:'describe',operation:'get_group_info'},f.exec))
+})
+test('public reaction revocation during message lookup prevents external write',async()=>{
+ const f=publicConversation(),calls=[]
+ const tool=qqActionTools('c',f.store,async(_id,name)=>{calls.push(name);f.channel.qq.enabledActions=[];return {message_type:'group',group_id:493531768}})[0]
+ await assert.rejects(tool.execute({action:'call',operation:'set_msg_emoji_like',params:{message_id:1,emoji_id:'14'}},f.exec))
+ assert.deepEqual(calls,['get_msg']);assert.equal(f.channel.qqActivity,undefined)
+})

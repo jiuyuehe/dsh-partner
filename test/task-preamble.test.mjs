@@ -84,3 +84,18 @@ test('sticker mutations share one persona preamble while discovery and autonomou
  assert.equal(await g.before('partner_qq',{action:'call',operation:'add_custom_face'}),undefined)
  assert.equal(sent.length,1)
 })
+
+test('short rhythm preamble rejects a report without sending and preserves the authored short action',async()=>{
+ const sent=[],events=[{type:'turn/start'},user('u')]
+ const g=new TaskPreambleGate(()=>events,async text=>sent.push(text),()=>true,()=>true)
+ await assert.rejects(g.acknowledge('先查接口\n再核对输入方式'),/尚未发送/)
+ assert.deepEqual(sent,[])
+ await g.acknowledge('我去翻翻接口。');assert.deepEqual(sent,['我去翻翻接口。'])
+ await g.acknowledge('我去查一下');assert.equal(sent.length,1)
+})
+
+test('lightweight message reaction does not demand a separate task announcement',()=>{
+ assert.equal(needsTaskPreamble('partner_qq',{action:'call',operation:'set_msg_emoji_like'}),false)
+ assert.equal(needsTaskPreamble('partner_qq',{action:'call',operation:'get_msg_emoji_likes'}),false)
+ assert.equal(needsTaskPreamble('partner_qq',{action:'call',operation:'add_custom_face'}),true)
+})

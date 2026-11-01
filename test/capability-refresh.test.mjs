@@ -253,7 +253,7 @@ test('role chat preserves the registered tool set across enable, edit and disabl
   await store.update(state => { state.companions[0].characterCard.roleText = '喜欢冷笑话的同行者'; state.companions[0].characterCard.length = 'rich' })
   await step(3)
   assert.match(sections.get('partner-identity'), /喜欢冷笑话/)
-  assert.match(contexts.get('partner-conversation-memory'), /篇幅偏好：丰富/)
+  assert.match(contexts.get('partner-conversation-memory'), /篇幅偏好：愿意展开聊/)
   assert.doesNotMatch(contexts.get('partner-conversation-memory'), /篇幅偏好：简短/)
   assert.deepEqual([...registered.keys()].sort(), tools)
   await store.update(state => { state.companions[0].characterCard.enabled = false })

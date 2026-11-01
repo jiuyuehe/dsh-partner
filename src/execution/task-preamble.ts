@@ -9,7 +9,7 @@ export function needsTaskPreamble(name:string,args:unknown):boolean {
   if(conversational.has(name))return false
   const input = args && typeof args === 'object' ? args as {action?:unknown;operation?:unknown} : undefined
   const action = input?.action
-  if(name === 'partner_qq' && action === 'call' && input?.operation === 'fetch_custom_face_detail')return false
+  if(name === 'partner_qq' && action === 'call' && ['fetch_custom_face_detail','set_msg_emoji_like','get_msg_emoji_likes','get_emoji_likes'].includes(String(input?.operation)))return false
   return !['list','describe','load','unload','reference','inspect'].includes(String(action))
 }
 /** Only the active user turn can request a private-channel acknowledgement. */
@@ -25,11 +25,12 @@ function inputId(events:readonly SessionEvent[]):string|undefined {
 }
 export class TaskPreambleGate {
   private readonly sent=new Map<string,Promise<void>>()
-  constructor(private readonly events:()=>readonly SessionEvent[],private readonly send:(text:string)=>Promise<void>,private readonly active:()=>boolean=()=>true){}
-  async acknowledge(text:string):Promise<void>{
+  constructor(private readonly events:()=>readonly SessionEvent[],private readonly send:(text:string)=>Promise<void>,private readonly active:()=>boolean=()=>true,private readonly short:()=>boolean=()=>false){}
+  async acknowledge(text:string,inlineDetails=false):Promise<void>{
     const id=inputId(this.events())
     if(!id || !this.active())throw Error('只有当前用户私聊任务可以发送前置回应，内部任务和自主活动不能使用')
     if(typeof text!=='string'||!text.trim()||text.length>1200)throw Error('请按当前人格写一句自然回应（1–1200 字），不使用固定进度套话')
+    if(this.short()&&!inlineDetails&&/[\r\n]/.test(text))throw Error('短句接话：前置回应尚未发送，请按人格用半句或一句自然接话只说接下来做什么，不展开计划。用户明确要求详细计划时可用 inlineDetails。')
     let pending=this.sent.get(id)
     if(!pending){pending=this.send(text.trim());this.sent.set(id,pending)}
     await pending
@@ -53,16 +54,16 @@ export class TaskPreambleGate {
   }
 }
 /** Scoped to one active channel reply; no extra model or hardcoded spoken text. */
-export function installTaskPreamble(agent:Agent,send:(text:string)=>Promise<void>,active:()=>boolean=()=>true):()=>void {
+export function installTaskPreamble(agent:Agent,send:(text:string)=>Promise<void>,active:()=>boolean=()=>true,short:()=>boolean=()=>false):()=>void {
   const tools=agent.ctx.tools as ToolRuntime
-  const gate=new TaskPreambleGate(()=>agent.session.snapshotEvents(),send,active)
+  const gate=new TaskPreambleGate(()=>agent.session.snapshotEvents(),send,active,short)
   const unregister=tools.register({
     name:'partner_chat_progress',
-    description:'私聊任务开始前按当前人格自然接话，用一两句说明接下来准备做的具体事情（例如核实什么或生成什么），保留角色称呼、语气与当前对话习惯；不只说俏皮话，也不写客服式进度播报。立即发送 text，确认投递后返回，不结束回合；随后继续实际调查、生图或执行，最后再正常答复。一轮只发送一次，不能用于自主活动或内部任务。计划使用将要做的语气，不把尚未调用的工具说成已执行或已完成；没有真实权限拒绝结果时不要声称账号无权限。',
-    parameters:{type:'object',properties:{text:{type:'string',minLength:1,maxLength:1200}},required:['text'],additionalProperties:false},
+    description:'私聊任务开始前按当前人格自然接话，遵循当前闲聊节奏：短句接话只用半句或一句说准备做什么；自然模式简述动作，展开模式可说明必要步骤（例如核实什么或生成什么），保留角色称呼、语气与当前对话习惯；不只说俏皮话，也不写客服式进度播报。立即发送 text，确认投递后返回，不结束回合；随后继续实际调查、生图或执行，最后再正常答复。一轮只发送一次，不能用于自主活动或内部任务。计划使用将要做的语气，不把尚未调用的工具说成已执行或已完成；没有真实权限拒绝结果时不要声称账号无权限。',
+    parameters:{type:'object',properties:{text:{type:'string',minLength:1,maxLength:1200},inlineDetails:{type:'boolean',description:'仅用户本轮明确要求完整计划时使用，允许展开前置回应。'}},required:['text'],additionalProperties:false},
     output:{schema:{type:'object'},render:()=>[{type:'text',text:'前置回应已送达；继续执行任务，完成后再给出最终回复。'}]},
     presentCall:()=>({card:'generic',title:'任务前置回应'}),
-    async execute(raw,exec){exec.signal.throwIfAborted();await gate.acknowledge((raw as {text:string}).text);exec.signal.throwIfAborted();return {delivered:true}},
+    async execute(raw,exec){exec.signal.throwIfAborted();await gate.acknowledge((raw as {text:string}).text,(raw as {inlineDetails?:boolean}).inlineDetails===true);exec.signal.throwIfAborted();return {delivered:true}},
   })
   const unguard=agent.ctx.on('tools/pre-execute',async(exec,next)=>{
     const decision=await next()

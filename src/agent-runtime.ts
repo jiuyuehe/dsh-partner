@@ -1,3 +1,5 @@
+import { ReplyCompletionGuard, INCOMPLETE_REPLY } from './chat/reply-completion.js'
+import { conversationRecallQuery, conversationMemories, dreamContextRequested } from './chat/context-selection.js'
 import { renderReplyContinuity } from './chat/reply-continuity.js'
 import {rollConversationContext,ROLLING_CONTEXT_GUIDANCE} from './rolling-context.js'
 import {recallConversationHistory,recordLocalInputOrigins,recordInputOrigin} from './conversation-history-recall.js'
@@ -6,7 +8,7 @@ import { installTaskPreamble } from './execution/task-preamble.js'
 import { AsyncSemaphore } from './core/semaphore.js'
 import { automaticMemoryAllowed } from './memory-admission.js'
 import { personaReferenceRequested, renderPersonaReference } from './character/identity-guide.js'
-import { activityPolicyCurrent, postReplyAllowed, postReplyCurrent, postReplyProbability, completedActivityDidWork, POST_REPLY_PROMPT } from './character/post-reply.js'
+import { activityPolicyCurrent, postReplyAllowed, postReplyCurrent, postReplyProbability, completedActivityDidWork, postReplyActivityPrompt } from './character/post-reply.js'
 import {PARTNER_TOOL_ENTRIES} from './collaboration/tool-discovery.js'
 import {setReplyTiming} from './channels/qq/latency.js'
 import { resolveToolAccess, installToolAccessGuard } from './execution/tool-access-adapter.js'
@@ -21,6 +23,7 @@ import { renderSleepContext, isSleeping } from './character/sleep.js'
 import { questionOrigin } from './channels/question-origin.js'
 import { renderCharacterContext } from './character/domain.js'
 import { renderConversationTurn } from './character/conversation-behavior.js'
+import { projectConversationPrompt } from './character/prompt-projection.js'
 import { renewContext } from './context-renewal.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { isPluginSource } from './message-source.js'
@@ -200,16 +203,22 @@ export class PartnerAgentRuntime {
         const rollingMemory = this.configurations.forSession(context.agent.session.id)?.companion.automation.memory
         if (rollingMemory?.rollingContextEnabled) rollConversationContext(context.agent.session, rollingMemory)
         const enforce = (assembly: typeof _assembly) => {
-          if (this.autonomousAssemblyContexts.has(context)) return assembly
           const configuration=this.configurations.forSession(context.agent!.session.id)
+          const project = (value: typeof _assembly) => configuration ? projectConversationPrompt(value, context.agent!, {
+            roleEnabled: configuration.companion.characterCard?.enabled === true,
+            discovery: configuration.companion.toolDiscovery === true,
+          }) : value
+          if (this.autonomousAssemblyContexts.has(context)) return project(assembly)
           if(configuration?.companion.toolDiscovery){
             const access=resolveToolAccess({agent:context.agent!,state:this.store.snapshot(),...(this.admittedInputs.get(context.agent!)?.length?{events:this.inputEvents(context.agent!)}:{})})
-            return {...assembly,tools:assembly.tools.filter(tool=>PARTNER_TOOL_ENTRIES.some(name=>name===tool.name)&&(!['partner_work_execute','partner_chat_reply','partner_chat_progress'].includes(tool.name)||access.sendTools&&(!access.allowedTools||access.allowedTools.includes(tool.name))))}
+            return project({...assembly,tools:assembly.tools.filter(tool=>PARTNER_TOOL_ENTRIES.some(name=>name===tool.name)&&(!['partner_work_execute','partner_chat_reply','partner_chat_progress','partner_stickers'].includes(tool.name)||access.sendTools&&(!access.allowedTools||access.allowedTools.includes(tool.name))))})
           }
           const access = resolveToolAccess({agent:context.agent!, state:this.store.snapshot(), ...(this.admittedInputs.get(context.agent!)?.length ? {events:this.inputEvents(context.agent!)} : {})})
-          return { ...assembly, tools: !access.sendTools ? [] : access.allowedTools ? assembly.tools.filter(tool => access.allowedTools!.includes(tool.name)) : assembly.tools }
+          return project({ ...assembly, tools: !access.sendTools ? [] : access.allowedTools ? assembly.tools.filter(tool => access.allowedTools!.includes(tool.name)) : assembly.tools })
         }
-        if (this.rebuildingAssemblies.has(context)) return enforce(await next())
+        // The outer assembly applies access and projection once. Re-projecting
+        // here would lose the deferred protocols when the outer pass sees them removed.
+        if (this.rebuildingAssemblies.has(context)) return next()
         const changed = await this.prepareAgentAssembly(context.agent, context.signal)
         const contextual = await this.prepareConversationContext(context.agent, context.signal)
         if (!changed && !contextual) return enforce(await next())
@@ -354,7 +363,7 @@ export class PartnerAgentRuntime {
     } else if (!idleContactDue(this.store.snapshot(), companion, user, Date.now(), timeZone)) return
     const stableSeq = agent.session.seq
     const message = createUserMessage({ content: [{type:'text',text:
-      idleActivityPrompt(this.store.snapshot(),companion,agent.session.snapshotEvents()) + (continuation ? '\n' + POST_REPLY_PROMPT : '')
+      (continuation ? postReplyActivityPrompt : idleActivityPrompt)(this.store.snapshot(),companion,agent.session.snapshotEvents())
     }], source:{kind:'plugin:@lemoncat7/dsh-partner',plugin:'@lemoncat7/dsh-partner',form:'notice',summary:IDLE_CONTACT_NOTICE} })
     let claimed = false
     await this.store.update(draft => {
@@ -978,7 +987,7 @@ export class PartnerAgentRuntime {
     const committedIds = new Set(committedMessages.map(m => m.id))
     const messages = [...committedMessages, ...(this.admittedInputs?.get(agent) ?? []).filter(m => !committedIds.has(m.id))]
     const last = [...messages].reverse().find(m => m.role === 'user' && m.source.kind === 'user')
-    const query = last && last.role === 'user' ? textContent(last.content) : ''
+    const query = last && last.role === 'user' ? conversationRecallQuery(textContent(last.content), !!relationEvents) : ''
     if (!identityRelation && !relationshipTextForIdentity(companion) && (!this.memory || !companion.automation.memory.enabled) && !companion.characterCard?.enabled && !renderSleepContext(companion, route.id) && !personaReferenceRequested(query)) {
       this.characterContexts.get(agent.session.id)?.()
       this.characterContexts.delete(agent.session.id)
@@ -995,7 +1004,8 @@ export class PartnerAgentRuntime {
     if (this.contextRevisions.get(agent) === revision) return false
     const scope = conversationMemoryScope(route, this.store.snapshot().sessions)
     const story = companion.characterCard?.enabled ? await this.memory?.characterState(companion.id, scope) : undefined
-    const recalled = companion.automation.memory.enabled ? await this.memory?.recallContext(companion.id, scope, query, 8, { includeHistory: !companion.characterCard?.enabled }) : undefined
+    const recall = companion.automation.memory.enabled ? await this.memory?.recallContext(companion.id, scope, autonomous ? '' : query, 4, { includeHistory: !companion.characterCard?.enabled }) : undefined
+    const recalled = recall ? conversationMemories(recall, autonomous ? '' : query) : undefined
     let consecutiveUserMessages = 0
     for (const message of [...messages].reverse()) {
       if (message.role === 'assistant') break
@@ -1006,12 +1016,12 @@ export class PartnerAgentRuntime {
     const text = [origin?.type === 'user/message' && origin.data.source.kind === 'user' && access.sendTools && (!access.allowedTools || access.allowedTools.includes('partner_identity')) && personaReferenceRequested(query) ? renderPersonaReference() : '', access.allowedTools || !access.sendTools ? access.denialReason + ' 回复能力通过 partner_tools 查询和调用（未开启统一入口时使用原工具）；语音能力为 partner_qq_reply；不能代办操作，不承诺使用私有能力。' : '',
       renderIdentityRelationship(companion, identityRelation ? { channel: 'qq', matched: identityRelation.matched } : { channel: 'default' }),
       renderAffection(companion,affectionAudience),
-      renderCharacterContext(companion.characterCard, messages.slice(-6).filter(m => m.role === 'user' || m.role === 'assistant').map(m => textContent(m.content)).join('\n').slice(-12000), relationshipAllowed ? story : undefined),
+      renderCharacterContext(companion.characterCard, query, relationshipAllowed ? story : undefined),
       recalled ? renderMemory(recalled.relevant, recalled.connections, recalled.scenes, recalled.history) : '',
-      recalled && relationshipAllowed ? renderProfile(recalled.profile) : '',
+      recalled && relationshipAllowed && (recalled.profile.entries.length || recalled.profile.preferences?.length) ? renderProfile(recalled.profile) : '',
       renderQqIdentityRelation(identityRelation, autonomous && access.sendTools && !access.allowedTools),
       replyContinuity,
-      renderSleepContext(companion, this.store.snapshot().sessions.filter(r => r.companionId === companion.id && r.sessionId === route.sessionId).map(r => r.id), autonomous ? undefined : last?.id),
+      renderSleepContext(companion, this.store.snapshot().sessions.filter(r => r.companionId === companion.id && r.sessionId === route.sessionId).map(r => r.id), autonomous ? undefined : last?.id, Date.now(), {includeDream: dreamContextRequested(query, autonomous)}),
       renderConversationTurn(companion.characterCard, consecutiveUserMessages, autonomous),
     ].filter(Boolean).join('\n\n')
     this.characterContexts.get(agent.session.id)?.()
@@ -1184,7 +1194,15 @@ export class PartnerAgentRuntime {
       const stage=replyStage(event);if(stage)reportProgress(progress,stage)
       if(directProgress){const activity=replyActivity(event);if(activity)reportProgress(progress,activity)}
     })
-    const detachPreamble=progress?.acknowledge ? installTaskPreamble(agent,progress.acknowledge,()=>questionOrigin(agent.session.id,agent.session.snapshotEvents(),this.store.snapshot().sessions)?.id===session.id) : undefined
+    const detachPreamble=progress?.acknowledge ? installTaskPreamble(agent,progress.acknowledge,()=>questionOrigin(agent.session.id,agent.session.snapshotEvents(),this.store.snapshot().sessions)?.id===session.id,()=>this.store.snapshot().companions.find(c=>c.id===companion.id)?.characterCard?.length==='short') : undefined
+    const completion=new ReplyCompletionGuard(agent,()=>questionOrigin(agent.session.id,agent.session.snapshotEvents(),this.store.snapshot().sessions)?.id===session.id)
+    const detachCompletion=this.ctx.on('agent/turn-stopping',completion.stop)
+    const detachCompletionTools=agent.ctx.on('tools/pre-execute',async(exec,next)=>{
+      const decision=await next()
+      if(exec.agent!==agent||decision.kind!=='allow')return decision
+      const reason=completion.deny(exec.name,exec.arguments)
+      return reason?{kind:'deny',reason}:decision
+    })
     this.channelReplyOwners.set(agent.session.id, session.id)
     try {
       const userMessage = createUserMessage({
@@ -1197,8 +1215,8 @@ export class PartnerAgentRuntime {
       agent.followup(userMessage)
       await agent.whenIdle()
       modelEndedAt=Date.now()
-    } finally { this.channelReplyOwners.delete(agent.session.id); detachPreamble?.(); detach() }
-    const response = channelReplyPartsAfter(agent.session.snapshotEvents(), startSeq)
+    } finally { this.channelReplyOwners.delete(agent.session.id); detachCompletion(); detachCompletionTools(); detachPreamble?.(); detach() }
+    const response:ReturnType<typeof channelReplyPartsAfter> = completion.failed?{text:INCOMPLETE_REPLY,referenceTexts:[]}:channelReplyPartsAfter(agent.session.snapshotEvents(), startSeq)
     const stateStarted=Date.now()
     await this.store.update(state => {
       for(const target of state.sessions)if(target.sessionId===session.sessionId)target.lastMessageAt=Date.now()
@@ -1206,7 +1224,9 @@ export class PartnerAgentRuntime {
     const stateEnded=Date.now()
     if (deferred && deferred.length > 0) await this.concerns?.markMentioned(companion.id, deferred.map(item => item.id)).catch(() => {})
     const reply=await prepareChannelReply(response, session.cwd ?? this.defaultCwd)
-    reply.postReplySource = {routeId: session.id, sessionId: session.sessionId, userMessageId: deliveredUserMessageId}
+    const completed=agent.session.snapshotEvents().filter(e=>e.type==='turn/end').at(-1)
+    const answered=!!response.text.trim()||response.alreadyDelivered===true||!!response.chatParts?.length
+    if(!completion.failed&&answered&&completed?.type==='turn/end'&&completed.data.reason.kind==='completed')reply.postReplySource = {routeId: session.id, sessionId: session.sessionId, userMessageId: deliveredUserMessageId}
     if(this.store.snapshot().channels.some(c=>c.id===channelId&&c.platform==='qq'))this.ctx.logger?.info?.(`[qq-latency] ${JSON.stringify({stage:'agent',sessionId:session.sessionId,inputPrepMs:submittedAt-enteredAt,modelMs:modelEndedAt-submittedAt,afterModelMs:Date.now()-modelEndedAt})}`)
     setReplyTiming(reply,{queueMs:enteredAt-queuedAt,inputPrepMs:submittedAt-enteredAt,modelAndIdleMs:modelEndedAt-submittedAt,idleAfterTurnEndMs:lastTurnEnd===undefined?0:Math.max(0,modelEndedAt-lastTurnEnd),stateCommitMs:stateEnded-stateStarted,outboundPrepMs:Date.now()-stateEnded})
     return reply
@@ -1380,9 +1400,9 @@ export class PartnerAgentRuntime {
     this.restoredCompositions.delete(route.sessionId)
     const disposers: Array<() => void> = []
     try {
-      // Native DEPLOYMENT_PERSONA_SUFFIX: delivery style follows the general work preset,
-      // while all tool definitions and execution/permission policies remain present.
-      disposers.push(agentCtx.systemPrompt.section({ name: 'partner-identity', order: companion.characterCard?.enabled ? 10200 : -10, interpolate: false, text: renderPartnerPersona(companion, route.kind === 'local' ? 'local' : 'conversation', false) }))
+      // Chat identity precedes task/tool instructions. The request projection
+      // removes only the stock coding identity; custom presets stay intact.
+      disposers.push(agentCtx.systemPrompt.section({ name: 'partner-identity', order: -10, interpolate: false, text: renderPartnerPersona(companion, route.kind === 'local' ? 'local' : 'conversation', false) }))
       if(companion.automation.memory.rollingContextEnabled)disposers.push(agentCtx.systemPrompt.context({name:'partner-rolling-window',order:-4,text:ROLLING_CONTEXT_GUIDANCE,interpolate:false,required:true}))
       disposers.push(agentCtx.systemPrompt.section({ name: 'partner-tool-routing', order: -9, text: companion.toolDiscovery ? '工具通过当前提供的统一入口发现和调用；入口内的操作名不是顶层工具名。具体工作流程随 describe 返回，Skill 按需 load。真实权限、审批、取消与执行结果仍由原工具处理。' : renderToolProtocol() }))
       disposers.push(agentCtx.tools.register({

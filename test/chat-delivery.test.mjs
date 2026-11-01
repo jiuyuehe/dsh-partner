@@ -269,3 +269,14 @@ test('chat line normalization preserves sticker order and total part limit',()=>
  assert.equal(segmentChatInput(tooMany,true),tooMany)
  assert.equal(segmentChatInput(input,false),input)
 })
+
+test('local Markdown image cannot conclude chat before explicit attachment delivery',async()=>{
+ const state={companions:[{id:'a',characterCard:{enabled:true,segmentedReplies:true,stickersEnabled:true}}],sessions:[{sessionId:'s',companionId:'a'}]}
+ const tool=chatTools('a',{snapshot:()=>state,isCompanionRemoving:()=>false},{},{},{},'/partner-local/v1')[1]
+ let ended=0
+ const exec={signal:new AbortController().signal,concludeTurn(){ended++},agent:{session:{id:'s',snapshotEvents:()=>[start,user]}}}
+ for(const text of ['![梦里的拖鞋列车](</home/node/partners/companion-default/generated/result.png>)','给你看\n![图](generated/a.png)','![图](sandbox:/tmp/a.png)'])await assert.rejects(tool.execute({messages:[{text}]},exec),/partner_send_attachment/)
+ assert.equal(ended,0)
+ assert.deepEqual((await tool.execute({messages:[{text:'画好了 这车真没轮子'}]},exec)).parts,[{type:'text',text:'画好了 这车真没轮子'}]);assert.equal(ended,1)
+ const code='写法示例：`![图](generated/a.png)`';assert.deepEqual((await tool.execute({messages:[{text:code}]},exec)).parts,[{type:'text',text:code}])
+})

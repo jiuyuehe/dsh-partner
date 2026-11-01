@@ -14,9 +14,9 @@ export function qqStickerAdapter(channel:WeixinChannel,fallback:StickerAdapter,c
  const item=(f:QqFace)=>({id:key(f),name:f.name.replace(/^\//,''),tags:['QQ原生表情',f.category,...(f.tags??[])].slice(0,8),mediaType:'image/gif',size:0})
  const resolve=(face:QqFace):ResolvedSticker=>({item:item(face),native:{provider:face.kind==='custom'?'qq-custom':'qq',id:face.nativeId??face.id,channelId:channel.id,accountId:channel.accountId,label:face.name.replace(/^\//,''),...(validEmojiPreview(face.image??'')?{previewUrl:face.image}:{})}})
  return {
-  async list(owner,query,signal) {
+  async list(owner,query,signal,kind) {
    signal.throwIfAborted()
-   const faces=(await native()).map(f=>({f,score:score(f,query)})).filter(e=>!query.trim()||e.score>0).sort((a,b)=>b.score-a.score).slice(0,48).map(e=>item(e.f))
+   const faces=(await native()).filter(f=>kind!=='image'||f.kind==='custom').map(f=>({f,score:score(f,query)})).filter(e=>!query.trim()||e.score>0).sort((a,b)=>Number(b.f.kind==='custom')-Number(a.f.kind==='custom')||b.score-a.score).slice(0,48).map(e=>item(e.f))
    // Channel mode never fills a failed QQ search with unrelated built-in images.
    if(enabled)return faces
    return policy.imagesEnabled?(await fallback.list(owner,query,signal)).slice(0,24):[]

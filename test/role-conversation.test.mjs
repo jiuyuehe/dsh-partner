@@ -44,7 +44,7 @@ test('role and chat preferences survive companion serialization without reducing
   assert.equal(saved.characterCard.roleText, input.characterCard.roleText)
   assert.equal(saved.characterCard.chatStyle, input.characterCard.chatStyle)
   assert.deepEqual(saved.capabilities, input.capabilities)
-  const prompt = renderPartnerPersona(saved, 'conversation')
+  const prompt = renderPartnerPersona(saved, 'conversation')+'\n'+renderConversationTurn(saved.characterCard,1)
   assert.match(prompt, /工具权限与结果/)
   assert.match(prompt, /玩笑直接接/)
   for (const surface of ['heartbeat','ephemeral']) assert.doesNotMatch(renderPartnerPersona(saved, surface), /角色表达|本轮聊天提醒/)
@@ -79,14 +79,15 @@ test('persona and protocols stay stable while expression options occur once in c
  const before=JSON.stringify(card)
  const persona=renderPartnerPersona({...createDefaultCompanion(),characterCard:card})
  assert.equal(persona.split(card.roleText).length-1,1)
- assert.equal(persona.split(card.chatStyle).length-1,1)
+ assert.equal(persona.split(card.chatStyle).length-1,0)
  assert.doesNotMatch(persona,/篇幅偏好/)
  assert.match(persona,/任务回应流程/)
  assert.match(persona,/分段回复已开启/)
  assert.match(persona,/partner_chat_progress/)
  for(const autonomous of [false,true]) {
   const turn=renderConversationTurn(card,2,autonomous)
-  for(const stable of [card.roleText,card.chatStyle,'任务回应流程','聊天投递协议']) assert.ok(!turn.includes(stable))
+  assert.equal(turn.split(card.chatStyle).length-1,1)
+  for(const stable of [card.roleText,'任务回应流程','聊天投递协议']) assert.ok(!turn.includes(stable))
  }
  assert.match(renderConversationTurn(card,1),/篇幅偏好：简短/)
  assert.equal(renderConversationTurn(undefined,2),'')
@@ -99,7 +100,7 @@ test('persona and protocols stay stable while expression options occur once in c
 test('delivery settings retain exact channel operations without prescribing expression',()=>{
  const card=normalizeCharacterCard({enabled:true,roleText:'任何风格',segmentedReplies:true,stickersEnabled:true})
  const text=renderConversationBehavior(card)
- for(const name of ['partner_chat_reply','stickerId','partner_stickers','partner_qq_reply','partner_chat_progress','partner_requirements'])assert.ok(text.includes(name))
+ for(const name of ['partner_chat_reply','stickerId','partner_stickers','partner_qq_reply','partner_chat_progress'])assert.ok(text.includes(name))
  assert.match(text,/每次最多两张/)
  assert.match(text,/确认送达后继续/)
  assert.match(text,/已确认送达的文字、图片或语音不重复发送/)
@@ -117,4 +118,14 @@ for(const length of ['short','natural','rich'])test(`configured expression is pr
  assert.ok(text.includes(card.roleText))
  assert.ok(text.includes(card.chatStyle))
  assert.doesNotMatch(text,/不受闲聊字数限制|工作交付按需要展开|不凑满一至三句/)
+})
+
+
+test('ordinary and autonomous expression context contains no work delivery procedure',()=>{
+ for(const length of ['short','balanced','rich'])for(const autonomous of [false,true]){
+  const card=normalizeCharacterCard({enabled:true,roleText:'人格保持原样',length})
+  const text=renderConversationTurn(card,1,autonomous)
+  assert.doesNotMatch(text,/partner_send_attachment|workReport|workReply|报告|交付|核验|执行前|失败/)
+  assert.match(text,/具体角色说明和本轮用户要求优先/)
+ }
 })

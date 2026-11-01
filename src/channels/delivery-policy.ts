@@ -1,3 +1,4 @@
+import { deliveredAttachment } from '../attachments/delivery-receipt.js'
 import { chatReplyFromEvent, type ChatPart } from '../chat/protocol.js'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { isPluginSource } from '../message-source.js'
@@ -58,7 +59,7 @@ export function channelReplyPartsAfter(events: readonly SessionEvent[], fromSeq:
   const messages: string[] = [], referenceTexts: string[] = []
   const flush = (): void => {
     if (direct) {
-      if(chatDelivered)alreadyDelivered=true
+      if(chatDelivered){alreadyDelivered=true;if(!chat&&!answer)hasChat=true}
       if (chat) { ordered.push(...chat); hasChat = true; messages.push(chat.map(p => p.type === 'text' ? p.text : `[表情：${p.type==='emoji'?p.emoji.label:p.label}]`).join('\n\n')) }
       else if (answer) { messages.push(answer); ordered.push({type:'text',text:answer}) }
       referenceTexts.push(...references)
@@ -75,10 +76,15 @@ export function channelReplyPartsAfter(events: readonly SessionEvent[], fromSeq:
     else if (event.type === 'user/message' && event.data.source.kind === 'user') direct = true
     else if (isRequirementDeliveryReceipt(event) && direct && !autonomous) { /* Preserve the current user's final answer. */ }
     else if (isInternalTaskNotice(event)) { answer = ''; references = []; chat = undefined; chatDelivered=false; direct = false }
+    else if (direct && deliveredAttachment(event)) {
+      chatDelivered=true
+      const route=deliveredAttachment(event)!
+      chatOriginRouteId=chatOriginRouteId===undefined?route:chatOriginRouteId===route?route:null
+    }
     else if (direct && chatReplyFromEvent(event)) {
       const reply=chatReplyFromEvent(event)!
       chat = reply.parts; answer = ''
-      chatDelivered=reply.delivered===true
+      chatDelivered=chatDelivered||reply.delivered===true
       chatOriginRouteId = chatOriginRouteId === undefined ? reply.originRouteId : chatOriginRouteId === reply.originRouteId ? chatOriginRouteId : null
     }
     else if (direct && event.type === 'tool/result' && !chat) answer = ''

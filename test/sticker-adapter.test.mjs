@@ -65,3 +65,27 @@ test('QQ searches never introduce builtins and empty-query browsing keeps collec
  assert.equal(list[0].id.startsWith('qq-custom-'),true);assert.equal(list[1].id,'qq-face-14')
  await assert.rejects(adapter.resolve('c','builtin-care',signal),/不使用内置表情替代/)
 })
+
+test('image lookup excludes QQ faces and all-mode ranks collections before faces',async()=>{
+ const custom=qqCustomCatalog([{emoji_id:'favorite',desc:'得意'}])
+ const adapter=qqStickerAdapter(channel,new StickerAdapters(library).fallback,async()=>[{id:'14',name:'得意 开心',category:'QQ'},...custom])
+ const images=await adapter.list('c','得意',signal,'image')
+ assert.equal(images.length,1);assert.ok(images[0].id.startsWith('qq-custom-'))
+ assert.deepEqual(await adapter.list('c','开心',signal,'image'),[])
+ const all=await adapter.list('c','得意 开心',signal,'all')
+ assert.ok(all[0].id.startsWith('qq-custom-'));assert.equal(all[1].id,'qq-face-14')
+ const disabled=qqStickerAdapter({...channel,qq:{...channel.qq,imagesEnabled:false}},new StickerAdapters(library).fallback,async()=>custom)
+ assert.deepEqual(await disabled.list('c','',signal,'image'),[])
+})
+
+test('sticker tool defaults to image search, preserves explicit all and honors disabled setting',async()=>{
+ const {chatTools}=await import('../lib/chat/tools.js');let kind
+ const state={companions:[{id:'c',characterCard:{enabled:true,stickersEnabled:true}}],channels:[],sessions:[]}
+ const adapters={forRoute:()=>({list:async(_owner,_query,_signal,value)=>{kind=value;return []}})}
+ const tool=chatTools('c',{snapshot:()=>state,isCompanionRemoving:()=>false},library,{}, {},'',adapters)[0]
+ const exec={signal,agent:{session:{id:'s',snapshotEvents:()=>[]}}}
+ await tool.execute({action:'list'},exec);assert.equal(kind,'image')
+ await tool.execute({action:'list',kind:'all'},exec);assert.equal(kind,'all')
+ state.companions[0].characterCard.stickersEnabled=false
+ await assert.rejects(tool.execute({action:'list'},exec),/未开启/)
+})

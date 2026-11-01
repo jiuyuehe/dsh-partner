@@ -173,3 +173,15 @@ test('sleep permits only claimed activity cleanup; new input and revocation stil
  f.events.push({type:'user/message',seq:4,data:{id:'new',source:{kind:'user'}}})
  await assert.rejects(tool.execute({reason:'休息'},exec),/不能忽略/)
 })
+
+test('post-reply uses recent user and own reply without idle exploration or silence-history priming',async()=>{
+  const f=fixture()
+  f.events[0].data.content=[{type:'text',text:'那个双人关卡挺有意思'}]
+  f.events.push({type:'tool/result',seq:2,time:Date.now(),data:{message:{isError:false},meta:{kind:'partner-chat-v1',parts:[{type:'text',text:'我看怪物，你认路'}]}}})
+  f.events.push({type:'tool/ptc-dispatch',seq:3,time:Date.now(),data:{isError:false,meta:{kind:'partner-activity-silent-v1',reason:'旧活动只整理收藏'}}})
+  await hit(f);ready(f);await f.runtime.idleContact('c')
+  const text=f.followed[0].content[0].text
+  assert.ok(text.startsWith('这是回复或自主活动完成后的「主动延续」机会'))
+  for(const part of ['那个双人关卡挺有意思','我看怪物，你认路','partner_chat_reply','partner_activity_finish','此前未完成、失败或状态不明','执行时仍检查实时权限'])assert.ok(text.includes(part),part)
+  assert.ok(!text.includes('闲下来时优先找一件'));assert.ok(!text.includes('旧活动只整理收藏'))
+})

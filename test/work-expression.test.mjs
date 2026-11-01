@@ -203,7 +203,7 @@ test('handoff reference excludes planner prose and old final reports without cha
  assert.ok(reference.includes(report.result.facts[0]));assert.ok(reference.includes(report.result.unknowns[0]));
  assert.equal(JSON.stringify(f.events),before);
  const preferences=request.messages.at(-1);
- assert.equal(preferences.source.kind,'plugin:@lemoncat7/dsh-partner');assert.match(preferences.content[0].text,/对方明确要步骤或细节时按请求展开/);
+ assert.equal(preferences.source.kind,'plugin:@lemoncat7/dsh-partner');assert.match(preferences.content[0].text,/具体角色说明和本轮用户要求优先/);
  assert.ok(!request.system.includes('【用户配置的表达选项】'));
  assert.equal(request.messages.filter(m=>m.content.some(b=>b.type==='text'&&b.text.includes('【用户配置的表达选项】'))).length,1);
 })
@@ -211,4 +211,27 @@ test('handoff reference excludes planner prose and old final reports without cha
 test('separating the current utterance does not bypass the total context bound',async()=>{
  const f=fixture();f.events[1].data.content[0].text='x'.repeat(49000);
  await assert.rejects(f.run(),/too-large/);assert.equal(f.calls(),0);
+})
+
+test('short rhythm rejects long chat without truncation or inference, permits explicit inline request',async()=>{
+ const f=fixture();f.c.characterCard.length='short'
+ const tool=chatTools('c',f.store,{}, {},f.ctx,'/local')[1],text='完整报告内容。'.repeat(40)
+ await assert.rejects(tool.execute({messages:[{text}]},f.exec),/尚未发送或结束回合/)
+ assert.equal(f.concluded(),0);assert.equal(f.calls(),0)
+ const out=await tool.execute({messages:[{text}],inlineDetails:true},f.exec)
+ assert.equal(out.parts[0].text,text);assert.equal(f.concluded(),1)
+})
+
+test('short long-work delivery requires a successful trusted receipt and keeps failures visible',async()=>{
+ const f=fixture();f.c.characterCard.length='short'
+ const long=structuredClone(report);long.result.evidence=['完整依据。'.repeat(300)]
+ f.events[4].data.message.content[0].text=JSON.stringify(long)
+ const tool=chatTools('c',f.store,{}, {},f.ctx,'/local')[1],args={messages:[{text:'查到了，不过视频还没跑通。'}]}
+ await assert.rejects(tool.execute(args,f.exec),/长任务报告尚未交付/)
+ f.events.push({seq:6,type:'tool/call',data:{callId:'file',name:'partner_send_attachment'}},{seq:7,type:'tool/result',data:{message:{toolCallId:'file',content:[{type:'text',text:JSON.stringify({conversation:'attachment_recorded',deliveryId:'doc',channel:'failed',reportRunIds:['run-real']})}]}}})
+ await assert.rejects(tool.execute(args,f.exec),/长任务报告尚未交付/)
+ f.events.push({seq:8,type:'tool/call',data:{callId:'retry',name:'partner_send_attachment'}},{seq:9,type:'tool/result',data:{message:{toolCallId:'retry',content:[{type:'text',text:JSON.stringify({conversation:'attachment_recorded',deliveryId:'doc',channel:'sent'})}]}}})
+ await assert.rejects(tool.execute({messages:[{text:'报告已发送\n还有一些解释'}]},f.exec),/一条不换行/)
+ assert.equal((await tool.execute(args,f.exec)).parts[0].text,args.messages[0].text)
+ assert.equal(f.calls(),0);assert.equal(f.concluded(),1)
 })

@@ -40,7 +40,7 @@ function fixture(t){
 const call=(invoke,name,args={})=>invoke('partner_work_tools',{action:'call',name,argumentsJson:JSON.stringify(args)})
 
 test('work keeps tool trace separate and executes in original permission scope, returns facts and artifacts',async t=>{
- const f=fixture(t);let invokedAgent
+ const f=fixture(t);f.c.characterCard={enabled:true,length:'short'};let invokedAgent
  f.scope.ctx.tools.register(tool('web_read',async(_args,exec)=>{invokedAgent=exec.agent;return {found:'真实结果'}}))
  f.setDriver(async({request,invoke})=>{
   assert.equal(request.kind,'work');assert.equal(request.parentSessionId,'main');assert.equal(request.input,undefined)
@@ -53,6 +53,7 @@ test('work keeps tool trace separate and executes in original permission scope, 
  assert.equal(output.isError,false);assert.equal(invokedAgent,f.agent)
  const parsed=JSON.parse(output.value);assert.equal(parsed.result.status,'completed');assert.deepEqual(parsed.result.artifacts,result.artifacts)
  assert.equal(parsed.execution.catalogueOnly,false)
+ assert.match(parsed.next,/partner_send_attachment/);assert.match(parsed.next,/不汇总/)
  assert.equal(f.agent.session.snapshotEvents().some(e=>e.type==='tool/ptc-dispatch'),false)
  assert.equal(f.child().session.snapshotEvents().some(e=>e.type==='tool/ptc-dispatch'&&e.data.name==='web_read'),true)
  assert.equal(f.subscriptions(),0)

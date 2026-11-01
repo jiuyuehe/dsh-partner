@@ -150,3 +150,32 @@ test('download endpoint serves only recorded snapshots and rejects deleted owner
   await assert.rejects(dispatchAttachmentsApi({method:'GET'},res,['attachments','../x'],f.service,store),/不存在/)
   await assert.rejects(dispatchAttachmentsApi({method:'GET'},res,['attachments',item.id],f.service,{...store,snapshot:()=>({companions:[]})}),/不存在/)
 })
+
+test('inline document delivers exact content, retries idempotently and never concludes the chat',async t=>{
+ const f=await fixture(t),messages=[],sent=[]
+ const state={companions:[{id:'c1'}],sessions:[{id:'r',companionId:'c1',sessionId:'s1',kind:'channel',cwd:f.cwd,inboundMessageIds:['u']}]}
+ const events=[{seq:1,type:'turn/start',data:{}},{seq:2,type:'user/message',data:{id:'u',source:{kind:'user'}}}]
+ const tool=attachmentTool('c1',{snapshot:()=>state,isCompanionRemoving:()=>false},f.service,{}, {sendExplicitAttachment:async(_s,file)=>sent.push(await readFile(file.path,'utf8'))},'/api')
+ const exec={signal:f.signal,agent:{session:{id:'s1',header:{cwd:f.cwd},snapshotEvents:()=>events}},deferContext:m=>messages.push(m),concludeTurn:()=>assert.fail('file must not end conversation')}
+ const content='# 调查\n\n结论\n\n未验证：本轮没有实测。\n\n'+ '详细依据\n'.repeat(100)
+ const input={document:{name:'调查结果.md',content}}
+ const result=JSON.parse(await tool.execute(structuredClone(input),exec))
+ assert.equal(result.channel,'sent');assert.deepEqual(sent,[content]);assert.equal(messages.length,1)
+ await tool.execute(structuredClone(input),exec);assert.equal(sent.length,1)
+ for(const document of [{name:'../escape.md',content:'x'},{name:'x.md',content:''},{name:'x.exe',content:'x'}])await assert.rejects(tool.execute({document},exec))
+ await assert.rejects(tool.execute({...input,path:'report.md'},exec),/只能提供一个/)
+})
+
+test('work report preserves all facts and failures without another model, rejects old or invented runs',async t=>{
+ const f=await fixture(t),state={companions:[{id:'c1'}],sessions:[{id:'local',companionId:'c1',sessionId:'s1',kind:'local',cwd:f.cwd}]}
+ const report={runId:'real',result:{status:'partial',facts:['确实抽过帧'],unknowns:['本轮尚未端到端实测'],evidence:['https://example.test/reference'],artifacts:['/workspace/result.md']}}
+ const events=[{seq:1,type:'turn/start',data:{}},{seq:2,type:'user/message',data:{id:'u',source:{kind:'user'}}},{seq:3,type:'tool/call',data:{name:'partner_work_execute',callId:'w'}},{seq:4,type:'tool/result',data:{message:{toolCallId:'w',content:[{type:'text',text:JSON.stringify(report)}]}}}]
+ const tool=attachmentTool('c1',{snapshot:()=>state,isCompanionRemoving:()=>false},f.service,{}, {sendExplicitAttachment:()=>assert.fail('local must not send')},'/api')
+ const exec={signal:f.signal,agent:{session:{id:'s1',header:{cwd:f.cwd},snapshotEvents:()=>events}},deferContext:()=>{}}
+ const result=JSON.parse(await tool.execute({workReport:{runIds:['real']}},exec));assert.equal(result.channel,'none')
+ const text=(await f.service.bytes(f.service.get(result.deliveryId))).toString()
+ for(const field of ['facts','unknowns','evidence','artifacts'])for(const value of report.result[field])assert.ok(text.includes(value))
+ await assert.rejects(tool.execute({workReport:{runIds:['invented']}},exec),/不存在/)
+ events.push({seq:5,type:'turn/start',data:{}})
+ await assert.rejects(tool.execute({workReport:{runIds:['real']}},exec),/当前回合/)
+})

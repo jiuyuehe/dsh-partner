@@ -285,3 +285,20 @@ test('idle plain final paragraphs become bubbles only with segmentation enabled'
   assert.deepEqual(f.sent[0].reply.chatParts,enabled?text.split('\n\n').map(text=>({type:'text',text})):undefined)
  }
 })
+
+test('idle continuation keeps user and own reply anchors when autonomous chatter fills the tail',async()=>{
+ const {activityConversation}=await import('../lib/character/idle-contact.js')
+ const user=text=>({type:'user/message',time:10,data:{source:{kind:'user'},content:[{type:'text',text}]}})
+ const answer=text=>({type:'tool/result',time:20,data:{meta:{kind:'partner-chat-v1',parts:[{type:'text',text}]}}})
+ const events=[user('我只能看见路，你只能看见怪物'),answer('那我给你报怪物的位置'),...Array.from({length:20},(_,i)=>answer('自主消息'+i))]
+ const before=structuredClone(events),context=activityConversation(events)
+ assert.ok(context.length<=14)
+ assert.ok(context.some(x=>x.role==='user'&&x.text==='我只能看见路，你只能看见怪物'))
+ assert.ok(context.some(x=>x.role==='assistant'&&x.text==='那我给你报怪物的位置'))
+ assert.equal(context.at(-1).text,'自主消息19')
+ assert.equal(context[0].at,10);assert.deepEqual(events,before)
+ const {state,companion}=fixture(),prompt=idleActivityPrompt(state,companion,events)
+ assert.match(prompt,/不是只有刚回复后才能续话/)
+ assert.match(prompt,/partner_memory_recall/)
+ assert.doesNotMatch(prompt,/闲下来时优先找一件|只有没有合适行动/)
+})

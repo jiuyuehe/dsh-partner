@@ -12,6 +12,7 @@ import {chatTools} from '../lib/chat/tools.js'
 import {channelReplyPartsAfter} from '../lib/channels/delivery-policy.js'
 import {createDefaultCompanion,normalizeCompanionDraft} from '../lib/domain.js'
 import {SessionConfigurationIndex} from '../lib/companions/session-configuration.js'
+import {projectConversationPrompt} from '../lib/character/prompt-projection.js'
 
 function fixture(t){
  const root=new Context();root.provide('systemPrompt',{tools:()=>()=>{}});new ToolRuntime(root)
@@ -24,6 +25,20 @@ function fixture(t){
 }
 const definition=(name,execute=async()=>({ok:true}))=>({name,description:'工具说明 '+name,parameters:{type:'object',properties:{text:{type:'string'}},additionalProperties:false},output:{schema:{type:'object'},render:(_args,result)=>[{type:'text',text:JSON.stringify(result)}]},timeoutMs:5000,execute})
 const names=f=>f.root.tools.schemas(f.agent).filter(t=>PARTNER_TOOL_ENTRIES.includes(t.name)).map(t=>t.name).sort()
+
+test('describe returns deferred host protocol only after live tool authorization',async t=>{
+ const f=fixture(t),tool=definition('write')
+ t.after(installToolDiscovery(f.scope.ctx.tools,'c',f.store,[{tool,allowed:()=>true,protocol:()=> 'Additional policy.'}]))
+ projectConversationPrompt({sections:[{name:'tool:write',order:0,text:'Read before overwriting.'}],tools:[],contexts:[],variables:{}},f.agent,{roleEnabled:true,discovery:true})
+ const r=await f.invoke('partner_tools',{action:'describe',name:'write'})
+ assert.equal(r.isError,false);assert.equal(r.value.protocol,'Additional policy.\n\nRead before overwriting.')
+ f.state.channels=[{id:'qq',platform:'qq',qq:{identityBinding:{enabled:true,qqIds:['12345678']}}}]
+ const m=createUserMessage({source:{kind:'user'},content:[{type:'text',text:'hello'}]});f.agent.session.append('user/message',m,{surfaceOp:'append'})
+ f.state.sessions.push({id:'guest',kind:'channel',companionId:'c',sessionId:f.agent.session.id,channelId:'qq',userId:'22345678',inboundMessageIds:[m.id]})
+ const denied=await f.invoke('partner_tools',{action:'describe',name:'write'})
+ assert.equal(denied.isError,true)
+ assert.ok(!JSON.stringify(denied.content).includes('Read before overwriting.'))
+})
 
 test('fixed entries describe and invoke original tools without registry churn; host policies still deny',async t=>{
  const f=fixture(t);let calls=0,changes=0
@@ -204,4 +219,16 @@ test('permission summary is bounded and paginated, never dumps the whole tool ca
  const empty=await f.invoke('partner_tools',{action:'list',query:'browser'})
  assert.deepEqual(empty.value.tools,[]);assert.match(empty.value.next,/partner_work_execute/)
  assert.equal((await f.invoke('partner_channel_access',{offset:-1})).isError,true)
+})
+
+test('sticker lookup is a direct entry and still honors live capability revocation',async t=>{
+ const f=fixture(t);let allowed=true,calls=0
+ t.after(installToolDiscovery(f.scope.ctx.tools,'c',f.store,[{tool:definition('partner_stickers',async()=>{calls++;return {ok:true}}),allowed:()=>allowed}]))
+ assert.ok(PARTNER_TOOL_ENTRIES.includes('partner_stickers'))
+ assert.ok(names(f).includes('partner_stickers'))
+ assert.equal((await f.invoke('partner_stickers')).isError,false)
+ allowed=false
+ assert.equal((await f.invoke('partner_stickers')).isError,true)
+ assert.equal((await f.call('partner_stickers')).isError,true)
+ assert.equal(calls,1)
 })
