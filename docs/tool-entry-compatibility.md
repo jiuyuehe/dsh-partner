@@ -2,10 +2,10 @@
 
 伙伴沿用当前会话实际可见的 `knowledge`、`ssh` 工具，不注册重复的旧工具，也不接管原插件的授权逻辑。新版使用 `list → describe → call`；`tool` 是内部操作名，`arguments` 是原操作参数。旧版本仍真实暴露独立工具时，保留原调用方式。
 
-通过 `partner_tools` 调用时，`name` 为 `knowledge` 或 `ssh`，`argumentsJson` 为该入口完整参数的 JSON 字符串。代码模式使用实际生成的 `tools.knowledge` 或 `tools.ssh`。协作指令中的临时 SSH 授权和执行也遵守这个规则，不再要求调用未注册的顶层 `ssh_request_temporary_access`。
+`partner_tools` 仅收拢伙伴插件自行注册的工具，不枚举或转调其他插件。`knowledge`、`ssh`、生图及宿主文件工具保留自身顶层入口和参数，直接调用。代码模式使用实际生成的 `tools.knowledge` 或 `tools.ssh`。协作指令中的临时 SSH 授权和执行也遵守这个规则，不再要求调用未注册的顶层 `ssh_request_temporary_access`。
 
 fork Skill 的 `allowed-tools` 由同一个操作级策略适配：旧 `knowledge_*` 映射到知识库入口，旧 `ssh_*` 和明确列出的 SSH 文件传输操作映射到 SSH 入口。映射不修改 Skill、不扩大权限：目录可查询，但只能 describe/call 原白名单里的操作。其他插件的 `file_*` 不会自动获得 SSH 权限；显式允许入口名称时，仍受父级可见范围和原插件业务权限限制。
 
 模型可见工具过滤与执行守卫同时生效，未允许的作用域 MCP 工具也会被拒绝。空白名单不能因稍后注册新工具而恢复访问。主机权限、任务绑定临时授权、文件操作审批、知识库挂载范围、笔记预览与确认流程保持原样；持续关注检查依旧只读，不能借统一入口写入或访问笔记。
 
-验证使用真实 DSH ToolRuntime 检查操作级拒绝、父级撤权、作用域工具、空白名单、守卫销毁和伙伴入口嵌套调用。不会连接真实 SSH 主机或写入用户知识文档。
+验证使用真实 DSH ToolRuntime 检查操作级拒绝、父级撤权、作用域工具、空白名单、守卫销毁和外部插件入口保留。不会连接真实 SSH 主机或写入用户知识文档。

@@ -41,12 +41,12 @@ test('real tool guard denies guest execution, loaded tools and stale grants, whi
  const f=fixture(),root=new Context();root.provide('systemPrompt',{tools:()=>()=>{}});new ToolRuntime(root)
  const scope=createScope(root,f.agent);f.agent.ctx=scope.ctx;t.after(()=>scope.dispose())
  let calls=0
- for(const name of ['partner_identity','partner_tools','qq_api','ssh_exec','partner_chat_reply','partner_stickers','partner_qq','partner_qq_reply','partner_memory_recall','partner_chat_progress'])scope.ctx.tools.register(defineContentToolFixture({name,description:'test',parameters:{},execute:async()=>{calls++;return [{type:'text',text:'ok'}]}}))
+ for(const name of ['partner_identity','partner_tools','qq_api','ssh_exec','partner_chat_reply','partner_stickers','partner_qq','partner_qq_reply','partner_memory_recall','partner_agreement','partner_chat_say','partner_chat_progress'])scope.ctx.tools.register(defineContentToolFixture({name,description:'test',parameters:{},execute:async()=>{calls++;return [{type:'text',text:'ok'}]}}))
  t.after(installToolAccessGuard(root.tools,()=>f.state))
  const invoke=name=>root.tools.execute({callId:'test',name,arguments:{},agent:f.agent,signal:new AbortController().signal})
  f.send(f.guest);for(const name of ['partner_identity','qq_api','ssh_exec'])assert.equal((await invoke(name)).isError,true)
  assert.equal(calls,0)
- for(const name of ['partner_tools','partner_chat_reply','partner_stickers','partner_qq','partner_qq_reply','partner_memory_recall','partner_chat_progress'])assert.equal((await invoke(name)).isError,false)
+ for(const name of ['partner_tools','partner_chat_reply','partner_stickers','partner_qq','partner_qq_reply','partner_memory_recall','partner_agreement','partner_chat_say','partner_chat_progress'])assert.equal((await invoke(name)).isError,false)
  calls=0
  f.send(f.owner);assert.equal((await invoke('ssh_exec')).isError,false);assert.equal(calls,1)
  f.state.channels[0].qq.identityBinding.qqIds=['22345678'];assert.equal((await invoke('ssh_exec')).isError,true);assert.equal(calls,1)
@@ -76,7 +76,7 @@ test('guest conversation cannot indirectly create or cancel executable concerns 
 
 test('default adapter preserves local and other channel tools, QQ uses its own account policy',()=>{
  const f=fixture();f.send(f.guest)
- assert.deepEqual(resolveToolAccess({agent:f.agent,state:f.state}).allowedTools,['partner_tools','partner_channel_access','partner_chat_reply','partner_stickers','partner_qq','partner_qq_reply','partner_memory_recall','partner_chat_progress'])
+ assert.deepEqual(resolveToolAccess({agent:f.agent,state:f.state}).allowedTools,['partner_tools','partner_channel_access','partner_chat_reply','partner_stickers','partner_qq','partner_qq_reply','partner_memory_recall','partner_agreement','partner_chat_say','partner_chat_progress'])
  for(const platform of ['weixin','matrix','mattermost']){f.state.channels[0].platform=platform;assert.equal(resolveToolAccess({agent:f.agent,state:f.state}).sendTools,true)}
  f.state.channels=[];assert.equal(resolveToolAccess({agent:f.agent,state:f.state}).sendTools,true)
 })

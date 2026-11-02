@@ -30,7 +30,7 @@ function ready(f){f.route.postReplyOpportunity.dueAt=Date.now()-1}
 
 test('probability increases with affection, capped at 80%; disabling affection retains a baseline',()=>{
   const {companion}=fixture()
-  for(const [score,expected] of [[0,.45],[20,.52],[60,.66],[100,.8],[1000,.8]]){companion.affection.score=score;assert.ok(Math.abs(postReplyProbability(companion)-expected)<1e-9)}
+  for(const [score,expected] of [[-100,.10],[-50,.275],[0,.45],[20,.52],[60,.66],[100,.8],[1000,.8]]){companion.affection.score=score;assert.ok(Math.abs(postReplyProbability(companion)-expected)<1e-9)}
   companion.characterCard.affectionEnabled=false;assert.equal(postReplyProbability(companion),.45)
 })
 test('one durable draw after delivered reply; duplicate receipts cannot reroll a miss',async()=>{

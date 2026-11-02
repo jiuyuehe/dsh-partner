@@ -1,3 +1,4 @@
+import { agreementTool } from './chat/agreements.js'
 import {qqReplyTool} from './channels/qq/reply-tool.js'
 import {qqActionTools} from './channels/qq/actions.js'
 import { SleepService } from './character/sleep-service.js'
@@ -195,7 +196,7 @@ export function apply(context: Context, config: PartnerConfig): void {
       qqCatalogs.set(key,{at:Date.now(),faces});if(qqCatalogs.size>100)qqCatalogs.delete(qqCatalogs.keys().next().value!)
       try{return await faces}catch(error){qqCatalogs.delete(key);throw error}
     }))
-    composer.setChatToolFactory(id => [...chatTools(id, store, stickers, deliveries, ctx, resolved.apiPrefix,stickerAdapters),...qqActionTools(id,store,(...args)=>channels.qqActionCall(...args),channelId=>{for(const key of qqCatalogs.keys())if(key.startsWith(channelId+':'))qqCatalogs.delete(key)}),qqReplyTool(id,store,(...args)=>channels.qqActionCall(...args))])
+    composer.setChatToolFactory(id => [agreementTool(id,store),...chatTools(id, store, stickers, deliveries, ctx, resolved.apiPrefix,stickerAdapters),...qqActionTools(id,store,(...args)=>channels.qqActionCall(...args),channelId=>{for(const key of qqCatalogs.keys())if(key.startsWith(channelId+':'))qqCatalogs.delete(key)}),qqReplyTool(id,store,(...args)=>channels.qqActionCall(...args))])
     composer.setAttachmentToolFactory(id => attachmentTool(id, store, deliveries, ctx, channels, resolved.apiPrefix))
     channels.setRequirementDelivery(deliveries, resolved.apiPrefix)
     const requirementWorker = new RequirementWorker(store, requirements, {

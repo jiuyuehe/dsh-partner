@@ -110,8 +110,8 @@ test('tool guidance connects requests, specialists and the planning Skill withou
     },
     systemPrompt: { section(value) { sections.push(value); return () => {} } },
   }, store.snapshot().companions[0])
-  assert.deepEqual([...tools.keys()].sort(), ['partner_activity_finish', 'partner_collaborate', 'partner_identity', 'partner_requirements', 'partner_skill', 'partner_task_board', 'partner_work_execute', 'partner_workflow'])
-  for (const name of [...tools.keys()].filter(name => !['partner_identity', 'partner_activity_finish', 'partner_work_execute', 'partner_workflow'].includes(name))) assert.match(tools.get(name).description, /enabled task-planning Skill/)
+  assert.deepEqual([...tools.keys()].sort(), ['partner_activity_finish', 'partner_affection', 'partner_collaborate', 'partner_identity', 'partner_requirements', 'partner_skill', 'partner_task_board', 'partner_work_execute', 'partner_workflow'])
+  for (const name of [...tools.keys()].filter(name => !['partner_affection', 'partner_identity', 'partner_activity_finish', 'partner_work_execute', 'partner_workflow'].includes(name))) assert.match(tools.get(name).description, /enabled task-planning Skill/)
   assert.match(tools.get('partner_task_board').description, /no explicit @ or board request/)
   assert.match(tools.get('partner_collaborate').description, /do not duplicate already-assigned work/)
   assert.equal(sections.some(section => section.name.includes('preflight')), false)

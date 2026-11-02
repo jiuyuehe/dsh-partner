@@ -20,7 +20,7 @@ async function fixture(t, composer, mode = 'native') {
   new SystemPrompt(root, {})
   root.provide('ptcRuntime', {language:'typescript',programFormat:'script'})
   new ToolRuntime(root, {mode})
-  const agent = { status: 'running', session: { id: 'session-assembly', seq: 0 } }
+  const agent = { status: 'running', session: { id: 'session-assembly', seq: 0, snapshotEvents:()=>[] } }
   const scope = createScope(root, agent, { parent: {} })
   agent.ctx = scope.ctx
   const store = await PartnerStore.open(join(directory, 'state.json'))
@@ -192,6 +192,35 @@ for(const mode of ['native','ptc'])test(`public recall and gateway assembly pres
   const publicTools=a.tools.filter(t=>t.name!=='partner_work_execute');if(first)assert.deepEqual(publicTools,first);else first=publicTools
  }
  assert.equal(compositions,1)
+})
+
+test('partner discovery preserves external entries and their protocols without widening QQ permissions',async t=>{
+ const {Session}=await import('@deepseek-ai/dsh-session'),{createUserMessage}=await import('@deepseek-ai/dsh-llm')
+ let calls=0
+ const f=await fixture(t,{async compose(ctx){
+  const dispose=['generate_image','image_gen.imagegen','ssh','knowledge','write'].map(name=>ctx.tools.register(defineContentToolFixture({name,description:name,parameters:{},execute:async()=>{calls++;return [{type:'text',text:'image created'}]}})))
+  return ()=>dispose.forEach(fn=>fn())
+ }})
+ f.root.systemPrompt.section({name:'tool:write',order:20,text:'External write policy stays with write.'})
+ f.agent.session=Session.create('image-entry-permissions')
+ await f.store.update(s=>{
+  s.companions[0].toolDiscovery=true;s.sessions[0].sessionId=f.agent.session.id
+  s.channels.push({id:'qq-image',platform:'qq',companionId:s.companions[0].id,qq:{identityBinding:{enabled:true,qqIds:['12345678']}}})
+  for(const [id,userId] of [['image-owner','12345678'],['image-guest','22345678']])s.sessions.push({id,companionId:s.companions[0].id,sessionId:f.agent.session.id,kind:'channel',channelId:'qq-image',userId,lastMessageAt:1,inboundMessageIds:[]})
+ })
+ for(const id of ['image-owner','image-guest','image-owner']){
+  const m=createUserMessage({content:[{type:'text',text:'draw a tree'}],source:{kind:'user'}})
+  f.agent.session.append('user/message',m,{surfaceOp:'append'})
+  await f.store.update(s=>s.sessions.find(r=>r.id===id).inboundMessageIds.push(m.id))
+  const a=await f.assemble()
+  if(id==='image-owner')assert.ok(a.sections.some(s=>s.name==='tool:write'&&s.text==='External write policy stays with write.'))
+  for(const name of ['ssh','knowledge','write'])assert.equal(a.tools.some(t=>t.name===name),id==='image-owner')
+  assert.equal(a.tools.some(t=>t.name==='image_gen.imagegen'),id==='image-owner')
+  assert.equal(a.tools.some(t=>t.name==='generate_image'),id==='image-owner','external plugin entries must retain their native visibility')
+  const result=await f.root.tools.execute({agent:f.agent,name:'image_gen.imagegen',callId:id,arguments:{},signal:new AbortController().signal})
+  assert.equal(Boolean(result.isError),id==='image-guest')
+ }
+ assert.equal(calls,2,'guest cannot bypass the channel guard using the alias')
 })
 
 // The host snapshots providers before pre-step, then appends the accepted inbox.
@@ -372,4 +401,14 @@ test('real QQ assembly recalls actual speech and omits unrelated profile and dre
  const casual=await send('没关系');assert.equal(seen,'没关系');assert.doesNotMatch(casual,/公众号发布|十岁旧身份|旧画像|私有梦境正文/);assert.match(casual,/当前关系|当前休息状态/)
  const task=await send('公众号发布');assert.match(task,/公众号发布/)
  const dream=await send('做了什么梦');assert.match(dream,/私有梦境正文/)
+})
+
+test('fixed active agreements appear in actual request assembly and disappear on removal without changing history',async t=>{
+ const f=await fixture(t),events=[{seq:1,type:'user/message',data:{id:'u',source:{kind:'user'},content:[{type:'text',text:'继续'}]}}]
+ f.agent.session.snapshotEvents=()=>events
+ await f.store.update(s=>{s.companions[0].temporaryAgreements=[{id:'a',scope:JSON.stringify(['local',f.agent.session.id]),text:'本局配图',until:'本局结束',evidence:'配图',sourceMessageId:'old',updatedAt:1}]})
+ const first=await f.assemble();assert.match(first.sections.find(s=>s.name==='partner-active-agreements').text,/本局配图/)
+ assert.ok(!first.contexts.some(s=>s.name==='partner-active-agreements'))
+ await f.store.update(s=>{s.companions[0].temporaryAgreements=[]})
+ const next=await f.assemble();assert.ok(!next.sections.some(s=>s.name==='partner-active-agreements'));assert.equal(events.length,1)
 })

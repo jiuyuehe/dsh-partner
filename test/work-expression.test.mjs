@@ -235,3 +235,13 @@ test('short long-work delivery requires a successful trusted receipt and keeps f
  assert.equal((await tool.execute(args,f.exec)).parts[0].text,args.messages[0].text)
  assert.equal(f.calls(),0);assert.equal(f.concluded(),1)
 })
+
+test('an intermediate chat receipt cannot silently bypass undelivered long work',async()=>{
+ const f=fixture();f.c.characterCard.length='short'
+ Object.assign(f.state.sessions[0],{kind:'channel',inboundMessageIds:['u']})
+ const long=structuredClone(report);long.result.evidence=['完整依据。'.repeat(300)]
+ f.events[4].data.message.content[0].text=JSON.stringify(long)
+ f.events.push({seq:6,type:'tool/result',data:{message:{content:[]},meta:{kind:'partner-chat-v1',parts:[],delivered:true,intermediate:true,inputMessageId:'u',spokenText:'我查到一些啦',originRouteId:'r'}}})
+ await assert.rejects(chatTools('c',f.store,{}, {},f.ctx,'/local')[1].execute({messages:[]},f.exec),/长任务报告尚未交付/)
+ assert.equal(f.concluded(),0)
+})

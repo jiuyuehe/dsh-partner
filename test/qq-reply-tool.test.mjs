@@ -90,7 +90,7 @@ test('real unified voice call persists delivery metadata for channel projection'
  const f=fixture(),root=new Context();root.provide('systemPrompt',{tools:()=>()=>{}});new ToolRuntime(root)
  f.state.companions=[{id:'c',toolDiscovery:true}]
  const agent=f.exec.agent;agent.options={};const scope=createScope(root,agent);agent.ctx=scope.ctx;t.after(()=>scope.dispose())
- t.after(scope.ctx.tools.register(f.tool));t.after(installToolDiscovery(scope.ctx.tools,'c',f.store,[]))
+ t.after(installToolDiscovery(scope.ctx.tools,'c',f.store,[{tool:f.tool,allowed:()=>true}]))
  const result=await root.tools.execute({name:'partner_tools',arguments:{action:'call',name:'partner_qq_reply',argumentsJson:JSON.stringify({action:'voice',text:'你好'})},agent,signal:new AbortController().signal,callId:'unified-voice'})
  assert.equal(result.isError,false);assert.equal(result.concludesTurn,true);assert.equal(f.requests.length,1)
  const projected=await prepareChannelReply(channelReplyPartsAfter(agent.session.snapshotEvents(),-1),'/tmp')

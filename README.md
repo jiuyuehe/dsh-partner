@@ -4,7 +4,7 @@
 
 [![npm](https://img.shields.io/npm/v/%40lemoncat7%2Fdsh-partner)](https://www.npmjs.com/package/@lemoncat7/dsh-partner)
 
-本次发布：[2.23.26 更新说明](docs/releases/2.23.26.md)，包含 [2.21.12 会话与自主活动改进](docs/releases/2.21.12.md)。
+当前版本：[2.23.40 更新说明](docs/releases/2.23.40.md)，包含 [2.21.12 会话与自主活动改进](docs/releases/2.21.12.md)。
 
 ## 功能
 
@@ -19,7 +19,7 @@
 
 ## 安装
 
-当前插件版本 **2.23.26**，最低支持 DeepSeek Harness **0.2.1-rc.2**，已在 **0.2.1-rc.5** 部署验证（宿主仍为 RC），需要 Node.js **^22.19.0 或 >=24.0.0**。其他宿主版本请先查阅[兼容说明](docs/dsh-021-compatibility.md)和对应版本的发布说明。
+当前插件版本 **2.23.33**，最低支持 DeepSeek Harness **0.2.1-rc.2**，已在 **0.2.1-rc.5** 部署验证（宿主仍为 RC），需要 Node.js **^22.19.0 或 >=24.0.0**。其他宿主版本请先查阅[兼容说明](docs/dsh-021-compatibility.md)和对应版本的发布说明。
 
 ```bash
 dsh plugin --profile web add @lemoncat7/dsh-partner@latest
@@ -49,3 +49,7 @@ dsh plugin --profile web add @lemoncat7/dsh-partner@latest
 - [发布维护约定](docs/releases/README.md)
 
 QQ 接入说明见 [QQ 渠道（SnowLuma / OneBot v11）](docs/qq-channel.md)：正向 WebSocket 同时收发消息，填写 WS 地址与对应 Token 即可，无需单独填写 HTTP API。配置按连接、私聊、群聊、表情、权限和发送消息分层展示；群聊默认关闭，开启后选择群组及触发方式。
+
+### 2.23.38（本地验证版）
+
+短句接话在中途发言、工具前告知与最终答复共用篇幅提醒；每阶段每次输入最多提醒一次，明确要求详细/原文可展开，不截断正文。人物口吻继续来自角色配置，不内置年龄、称呼或口头禅。详见 [版本说明](docs/releases/2.23.38.md)。

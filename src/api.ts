@@ -1,3 +1,4 @@
+import { validateAgreements, type TemporaryAgreement } from './chat/agreements.js'
 import { fatigueValue } from './character/fatigue.js'
 import { applyIdentity } from './companions/identity.js'
 import { affectionEnabled, affectionProgress } from './character/affection.js'
@@ -215,6 +216,21 @@ async function dispatch(req: IncomingMessage, res: ServerResponse, prefix: strin
         return sendJson(res, 200, { ok: true })
       }
     }
+    if (id && segments[2] === 'agreements' && segments.length === 3) {
+      if(method==='GET')return sendJson(res,200,{agreements:requiredCompanion(runtime.store,id).temporaryAgreements??[]})
+      if(method==='PUT'){
+        mutation(req)
+        const body=await readObject(req)
+        if(!Array.isArray(body.agreements)||!Array.isArray(body.expectedAgreements))throw httpError(400,'需要约定列表和旧版本列表')
+        validateAgreements(body.agreements)
+        const saved=await runtime.store.update(state=>{
+          const c=state.companions.find(c=>c.id===id);if(!c)throw httpError(404,'伙伴不存在')
+          if(JSON.stringify(c.temporaryAgreements??[])!==JSON.stringify(body.expectedAgreements))throw httpError(409,'约定已变化，请刷新后重试')
+          c.temporaryAgreements=structuredClone(body.agreements) as TemporaryAgreement[]
+        })
+        return sendJson(res,200,{agreements:saved.companions.find(c=>c.id===id)!.temporaryAgreements})
+      }
+    }
     if (id && method === 'PUT' && segments[2] === 'identity' && segments.length === 3) {
       mutation(req)
       const body = await readObject(req)
@@ -231,7 +247,7 @@ async function dispatch(req: IncomingMessage, res: ServerResponse, prefix: strin
       const saved = await runtime.store.update(state => {
         const previous = state.companions.find(item => item.id === id)
         if (!previous) throw httpError(404, '伙伴不存在')
-        const next: Companion = { ...draft, ...(previous.affection ? {affection:previous.affection} : {}), ...(draft.toolDiscovery===undefined&&previous.toolDiscovery!==undefined?{toolDiscovery:previous.toolDiscovery}:{}), ...(draft.relationshipText === undefined && previous.relationshipText !== undefined ? {relationshipText:previous.relationshipText} : {}), ...(previous.sleepState ? {sleepState:previous.sleepState} : {}), ...(draft.sleepPolicy === undefined && previous.sleepPolicy ? {sleepPolicy:previous.sleepPolicy} : {}), ...(draft.idleContact === undefined && previous.idleContact ? {idleContact:previous.idleContact} : {}), ...(draft.characterCard === undefined && previous.characterCard ? {characterCard: previous.characterCard} : {}), ...(previous.notificationDelivery ? {notificationDelivery: previous.notificationDelivery} : {}), automation: previous.automation, id, createdAt: previous.createdAt, updatedAt: Math.max(Date.now(), previous.updatedAt + 1) }
+        const next: Companion = { ...draft, ...(previous.personaHistory?{personaHistory:previous.personaHistory}:{}), ...(previous.temporaryAgreements?{temporaryAgreements:previous.temporaryAgreements}:{}), ...(previous.affection ? {affection:previous.affection} : {}), ...(draft.toolDiscovery===undefined&&previous.toolDiscovery!==undefined?{toolDiscovery:previous.toolDiscovery}:{}), ...(draft.relationshipText === undefined && previous.relationshipText !== undefined ? {relationshipText:previous.relationshipText} : {}), ...(previous.sleepState ? {sleepState:previous.sleepState} : {}), ...(draft.sleepPolicy === undefined && previous.sleepPolicy ? {sleepPolicy:previous.sleepPolicy} : {}), ...(draft.idleContact === undefined && previous.idleContact ? {idleContact:previous.idleContact} : {}), ...(draft.characterCard === undefined && previous.characterCard ? {characterCard: previous.characterCard} : {}), ...(previous.notificationDelivery ? {notificationDelivery: previous.notificationDelivery} : {}), automation: previous.automation, id, createdAt: previous.createdAt, updatedAt: Math.max(Date.now(), previous.updatedAt + 1) }
         if (next.idleContact?.enabled && !idleContactRouteAllowed(state, next, next.idleContact.routeId)) throw httpError(400, '请选择本伙伴可用的会话；渠道联系人须已授权')
         state.companions = state.companions.map(item => item.id === id ? next : item)
       })

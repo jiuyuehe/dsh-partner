@@ -15,7 +15,7 @@ import { record, requiredText } from '../core/validation.js'
 
 // Work may act only through the original session. It cannot impersonate a fresh
 // local owner, create a second chat identity, or deliver an unsolicited reply.
-const excluded=new Set(['partner_work_execute','partner_work_tools','partner_work_result','partner_tools','run_code','partner_chat_reply','partner_chat_progress','partner_qq_reply','partner_activity_finish','partner_sleep','partner_identity','partner_send_attachment'])
+const excluded=new Set(['partner_work_execute','partner_work_tools','partner_work_result','partner_tools','run_code','partner_chat_reply','partner_agreement','partner_chat_say','partner_chat_progress','partner_qq_reply','partner_activity_finish','partner_sleep','partner_identity','partner_send_attachment'])
 const origin=(exec:ToolRunContext)=>[...(exec.agent?.session.snapshotEvents()??[])].reverse().find(e=>e.type==='user/message'&&(e.data.source.kind==='user'||isInternalTaskNotice(e)||isIdleContactNotice(e)))
 const listActions=new Set(['list','describe','load','reference','directory'])
 interface Receipt {callId:string;tool:string;action?:string;success:boolean;executed:boolean;catalogue:boolean}

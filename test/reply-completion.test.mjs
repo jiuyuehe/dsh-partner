@@ -60,3 +60,36 @@ test('a confirmed file with no prose suppresses fallback and does not swallow la
  const failed={...receipt(),data:{...receipt().data,message:{isError:true}}}
  assert.match((await prepareChannelReply(channelReplyPartsAfter([start(),user(),failed,end],0),'/unused')).text,/未生成/)
 })
+
+test('reasoning plus empty text after action acknowledgement still recovers in the same user turn',()=>{
+ for(const content of [[{type:'reasoning',text:''},{type:'text',text:''}],[{type:'reasoning',text:''}],[{type:'reasoning',text:'internal'},{type:'text',text:'  '}]]){
+  const empty={...answer(''),data:{message:{content}}}
+  for(const name of ['partner_chat_progress','partner_chat_say']){
+   const events=[start(),user(),call(name,{text:'我来画',beforeTools:true}),result({delivered:true}),empty]
+   const f=fixture(events);assert.equal(replyCompletionState(events).phase,'execute')
+   f.stop();assert.equal(f.sent.length,1);assert.equal(f.guard.deny('generate_image',{}),undefined)
+   f.stop();assert.throws(f.stop,new RegExp(INCOMPLETE_REPLY));assert.equal(f.sent.length,2)
+  }
+ }
+})
+test('reasoning-only stop after submitted work settles without re-executing it; live calls and interruption stay untouched',()=>{
+ const empty={...answer(''),data:{message:{content:[{type:'reasoning',text:''},{type:'text',text:''}]}}}
+ const events=[start(),user(),...generated(),empty],f=fixture(events)
+ f.stop();assert.equal(f.sent.length,1);assert.equal(replyCompletionState(events).phase,'settle')
+ assert.match(f.guard.deny('generate_image',{}),/不能重复/)
+ assert.equal(f.guard.deny('partner_send_attachment',{path:'/generated/a.png'}),undefined)
+ for(const last of [{...empty,data:{...empty.data,interrupted:true}},{...empty,data:{message:{content:[{type:'reasoning',text:''},{type:'tool-call',name:'generate_image'}]}}}])assert.equal(replyCompletionState([start(),user(),last]),undefined)
+ const complete={...empty,data:{message:{content:[{type:'reasoning',text:''},{type:'text',text:'好了'}]}}}
+ assert.equal(replyCompletionState([start(),user(),complete]).phase,'complete')
+})
+
+test('rejected empty end and directory calls are reply control, not submitted work',()=>{
+ const events=[start(),user(),call('partner_chat_say',{text:'我来画',beforeTools:true}),result({delivered:true}),call('partner_chat_reply',{messages:[]},'end'),result({},'end',true),call('partner_tools',{action:'list'}),answer('')]
+ const f=fixture(events);assert.equal(replyCompletionState(events).phase,'execute');f.stop()
+ assert.equal(f.guard.deny('partner_tools',{action:'call',name:'generate_image',argumentsJson:'{}'}),undefined)
+ events.push(...generated(),answer(''));f.stop()
+ assert.match(f.guard.deny('generate_image',{}),/不能重复/)
+ assert.equal(f.guard.deny('partner_chat_say',{text:'画出来啦'}),undefined)
+ assert.match(f.guard.deny('partner_chat_say',{text:'再画一次',beforeTools:true}),/不能重复/)
+ for(const name of ['partner_agreement','partner_channel_access','partner_stickers'])assert.equal(replyCompletionState([start(),user(),call(name,{action:'list'}),answer('')]).phase,'execute')
+})

@@ -673,7 +673,7 @@ export class ChannelManager {
       return
     }
     const authored = new AuthoredProgress(text => api.sendText(userId, text, this.contextTokens.get(tokenKey), signal),
-      () => channelReplyAllowed(this.store.snapshot(), channel.id, userId) && this.store.snapshot().channels.some(c => c.id === channel.id && c.enabled && c.companionId === companion.id), signal)
+      () => channelReplyAllowed(this.store.snapshot(), channel.id, userId) && this.store.snapshot().channels.some(c => c.id === channel.id && c.enabled && c.companionId === companion.id), signal,8)
     const reply = await this.agents.reply(companion, channel.id, userId, { text: inboundText, attachments }, authored.update).finally(() => authored.finish())
     if(reply.chatParts){
       // Claim the input before delivery so recovery never executes its tools again.
@@ -993,7 +993,7 @@ export class ChannelManager {
         }
         const progressTransport=api.progress?.(event.sender)
         const progress=progressTransport?new ReplyProgressController(progressTransport,allowed,signal):undefined
-        const authored=!event.qqGroup?new AuthoredProgress(text=>api.sendText(event.sender,text,undefined,signal),allowed,signal):undefined
+        const authored=!event.qqGroup?new AuthoredProgress(text=>api.sendText(event.sender,text,undefined,signal),allowed,signal,8):undefined
         const progressKey=JSON.stringify([channel.id,event.targetId||api.config?.targetId||'',event.sender])
         try {
         const attachments:PartnerInboundAttachment[]=[]

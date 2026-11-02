@@ -36,16 +36,16 @@ test('QQ input during silent autonomous work starts an owned reply and delivers 
  t.after(scope.ctx.tools.register(def('generate_image',async()=>{sent.push('image generated');return {ok:true}})))
  t.after(scope.ctx.tools.register(def('partner_send_attachment',async()=>{sent.push('image sent');return {ok:true}})))
  let calls=0
- const call=(name,args={})=>root.tools.execute({name:'partner_tools',arguments:{action:'call',name,argumentsJson:JSON.stringify(args)},agent,callId:'call-'+calls++,signal:new AbortController().signal})
+ const call=async(name,args={})=>{const request={name,arguments:args,agent,callId:'call-'+calls++,signal:new AbortController().signal};agent.session.append('tool/call',{name,arguments:JSON.stringify(args),callId:request.callId});const result=await root.tools.execute(request);agent.session.append('tool/result',JSON.parse(JSON.stringify({message:{id:request.callId,role:'tool',source:{kind:'tool',callId:request.callId},toolCallId:request.callId,content:result.content,isError:result.isError},meta:result.meta})),{surfaceOp:'append'});return result}
  agent.followup=message=>{
   agent.status='running';session.append('turn/start',{turn:2});session.append('user/message',message,{surfaceOp:'append'})
   work=(async()=>{
    assert.equal(runtime.channelReplyOwners.get(session.id),route.id)
-   const blocked=await call('generate_image');assert.equal(blocked.value.dispatch.isError,true);assert.deepEqual(sent,[])
-   const ack=await call('partner_chat_progress',{text:'这回我照着原来的样子画张近照，等着看吧。'})
-   assert.equal(ack.isError,false);assert.equal(ack.value.dispatch.isError,false)
-   assert.equal((await call('generate_image')).value.dispatch.isError,false)
-   assert.equal((await call('partner_send_attachment')).value.dispatch.isError,false)
+   const blocked=await call('generate_image');assert.equal(blocked.isError,true);assert.deepEqual(sent,[])
+   const ack=await call('partner_chat_say',{beforeTools:true,expectedTools:['generate_image'],text:'这回我照着原来的样子画张近照，等着看吧。'})
+   assert.equal(ack.isError,false);assert.equal(ack.isError,false)
+   assert.equal((await call('generate_image')).isError,false)
+   assert.equal((await call('partner_send_attachment')).isError,false)
    started.resolve();await finish.promise
    session.append('assistant/message',{message:{role:'assistant',content:[{type:'text',text:'画好啦，看这次的表情。'}]}},{surfaceOp:'append'})
    session.append('turn/end',{turn:2,reason:{kind:'completed'}});agent.status='idle'
@@ -66,4 +66,5 @@ test('QQ input during silent autonomous work starts an owned reply and delivers 
  assert.equal(sent.at(-1),'画好啦，看这次的表情。')
  assert.equal(runtime.channelReplyOwners.size,0)
  assert.equal(scope.ctx.tools.get('partner_chat_progress',agent),undefined)
+ assert.equal(scope.ctx.tools.get('partner_chat_say',agent),undefined)
 })

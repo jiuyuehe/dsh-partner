@@ -83,7 +83,7 @@ test('persona and protocols stay stable while expression options occur once in c
  assert.doesNotMatch(persona,/篇幅偏好/)
  assert.match(persona,/任务回应流程/)
  assert.match(persona,/分段回复已开启/)
- assert.match(persona,/partner_chat_progress/)
+ assert.match(persona,/partner_chat_say/)
  for(const autonomous of [false,true]) {
   const turn=renderConversationTurn(card,2,autonomous)
   assert.equal(turn.split(card.chatStyle).length-1,1)
@@ -100,7 +100,7 @@ test('persona and protocols stay stable while expression options occur once in c
 test('delivery settings retain exact channel operations without prescribing expression',()=>{
  const card=normalizeCharacterCard({enabled:true,roleText:'任何风格',segmentedReplies:true,stickersEnabled:true})
  const text=renderConversationBehavior(card)
- for(const name of ['partner_chat_reply','stickerId','partner_stickers','partner_qq_reply','partner_chat_progress'])assert.ok(text.includes(name))
+ for(const name of ['partner_chat_reply','stickerId','partner_stickers','partner_qq_reply','partner_chat_say'])assert.ok(text.includes(name))
  assert.match(text,/每次最多两张/)
  assert.match(text,/确认送达后继续/)
  assert.match(text,/已确认送达的文字、图片或语音不重复发送/)

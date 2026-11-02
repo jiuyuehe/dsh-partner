@@ -66,14 +66,14 @@ test('QQ adapter lists only authorized abilities, changes identity without chang
  for(const [id,userId] of [['owner','12345678'],['guest','22345678']])f.state.sessions.push({id,kind:'channel',channelId:'qq',userId,companionId:'c',sessionId:f.agent.session.id,inboundMessageIds:[]})
  const send=id=>{const m=createUserMessage({source:{kind:'user'},content:[{type:'text',text:'hello'}]});f.agent.session.append('user/message',m,{surfaceOp:'append'});f.state.sessions.find(s=>s.id===id).inboundMessageIds.push(m.id)}
  const before=f.root.tools.schemas(f.agent)
- send('owner');let access=await f.invoke('partner_channel_access',{offset:0});assert.ok(access.value.tools.some(t=>t.name==='partner_identity'));assert.ok(access.value.tools.some(t=>t.name==='host_private'))
+ send('owner');let access=await f.invoke('partner_channel_access',{offset:0});assert.ok(access.value.tools.some(t=>t.name==='partner_identity'));assert.ok(!access.value.tools.some(t=>t.name==='host_private'))
  assert.equal((await f.call('partner_identity')).value.dispatch.isError,false)
  send('guest');access=await f.invoke('partner_channel_access',{offset:0});assert.deepEqual(access.value.tools.map(t=>t.name).sort(),['partner_chat_reply','partner_memory_recall','partner_qq_reply','partner_stickers'])
  assert.equal((await f.call('partner_identity')).isError,true);assert.equal((await f.invoke('partner_identity')).isError,true)
  assert.equal((await f.invoke('partner_tools',{action:'describe',name:'host_private'})).isError,true)
  assert.equal((await f.call('partner_chat_reply')).value.dispatch.isError,false)
- send('owner');assert.equal((await f.call('host_private')).value.dispatch.isError,false)
- f.state.channels[0].qq.identityBinding.qqIds=[];assert.equal((await f.call('host_private')).isError,true)
+ send('owner');assert.equal((await f.invoke('host_private')).isError,false)
+ f.state.channels[0].qq.identityBinding.qqIds=[];assert.equal((await f.invoke('host_private')).isError,true)
  assert.deepEqual(f.root.tools.schemas(f.agent),before);assert.equal(calls,2)
 })
 test('gateway preserves validation, cancellation, additional context and terminal reply metadata',async t=>{
@@ -122,17 +122,17 @@ test('partner entry routes knowledge and SSH envelopes without bypassing operati
  t.after(installToolDiscovery(f.scope.ctx.tools,'c',f.store,[]))
  restrictExecutionTools(f.scope.ctx,f.agent,['partner_tools','knowledge_read','ssh_exec'])
  for(const [name,tool] of [['knowledge','knowledge_read'],['ssh','ssh_exec']]) {
-  assert.equal((await f.call(name,{action:'list'})).value.dispatch.isError,false)
-  assert.equal((await f.call(name,{action:'describe',tool})).value.dispatch.isError,false)
-  assert.equal((await f.call(name,{action:'call',tool,arguments:{id:'fixture'}})).value.dispatch.isError,false)
+  assert.equal((await f.invoke(name,{action:'list'})).isError,false)
+  assert.equal((await f.invoke(name,{action:'describe',tool})).isError,false)
+  assert.equal((await f.invoke(name,{action:'call',tool,arguments:{id:'fixture'}})).isError,false)
  }
  const before=calls.length
- for(const [name,tool] of [['knowledge','knowledge_note_update'],['ssh','ssh_forward_start']])assert.equal((await f.call(name,{action:'call',tool,arguments:{}})).value.dispatch.isError,true)
- assert.equal((await f.call('ssh_exec',{})).isError,true,'old operation is not a top-level catalogue entry')
+ for(const [name,tool] of [['knowledge','knowledge_note_update'],['ssh','ssh_forward_start']])assert.equal((await f.invoke(name,{action:'call',tool,arguments:{}})).isError,true)
+ assert.equal((await f.invoke('ssh_exec',{})).isError,true,'old operation is not a top-level catalogue entry')
  assert.equal(calls.length,before)
  assert.deepEqual(calls.at(-1).args,{action:'call',tool:'ssh_exec',arguments:{id:'fixture'}})
  f.scope.ctx.tools.guard(exec=>exec.name==='ssh'?'host approval required':undefined)
- assert.equal((await f.call('ssh',{action:'call',tool:'ssh_exec',arguments:{}})).value.dispatch.isError,true)
+ assert.equal((await f.invoke('ssh',{action:'call',tool:'ssh_exec',arguments:{}})).isError,true)
  assert.equal(calls.length,before)
 })
 
@@ -158,25 +158,20 @@ test('persona reference is discoverable and fully delivered through the two perm
  assert.deepEqual(names(f),before,'reference is on demand, not another permanent tool')
 })
 
-test('Chinese image requests discover English-only host image tools and execute through the gateway',async t=>{
+test('other plugin entries remain native and cannot be listed or invoked through partner_tools',async t=>{
  const f=fixture(t);let calls=0
- const image={...definition('generate_image',async()=>{calls++;return {files:[{path:'/workspace/generated/result.png'}]}}),description:'Generate or edit images using the configured image service.'}
+ const image={...definition('generate_image',async()=>{calls++;return {files:[{path:'/workspace/generated/result.png'}]}}),description:'Generate images'}
  t.after(f.scope.ctx.tools.register(image))
  t.after(installToolDiscovery(f.scope.ctx.tools,'c',f.store,[]))
- for(const query of ['生图','画图','生成图片','图生图','改图','帮我画一张图','image']){
-  const result=await f.invoke('partner_tools',{action:'list',query})
-  assert.equal(result.isError,false);assert.deepEqual(result.value.tools.map(t=>t.name),['generate_image'])
- }
- const categories=await f.invoke('partner_tools',{action:'list'})
- assert.equal(categories.value.categories.find(c=>c.id==='media').count,1)
- const listed=await f.invoke('partner_tools',{action:'list',category:'media'})
- assert.match(listed.value.tools[0].summary,/生图/)
- const described=await f.invoke('partner_tools',{action:'describe',name:'generate_image'})
- assert.deepEqual(described.value.parameters,image.parameters)
- const generated=await f.call('generate_image',{text:'a cat'})
- assert.equal(generated.value.dispatch.isError,false);assert.equal(calls,1)
- f.scope.ctx.tools.guard(e=>e.name==='generate_image'?'image permission revoked':undefined)
- assert.equal((await f.call('generate_image',{text:'a cat'})).value.dispatch.isError,true);assert.equal(calls,1)
+ assert.deepEqual((await f.invoke('partner_tools',{action:'list',query:'image'})).value.tools,[])
+ assert.equal((await f.invoke('partner_tools',{action:'describe',name:'generate_image'})).isError,true)
+ assert.equal((await f.call('generate_image')).isError,true)
+ assert.equal(calls,0)
+ assert.equal((await f.invoke('generate_image',{text:'a tree'})).isError,false)
+ assert.equal(calls,1)
+ f.scope.ctx.tools.guard(e=>e.name==='generate_image'?'permission revoked':undefined)
+ assert.equal((await f.invoke('generate_image')).isError,true)
+ assert.equal(calls,1)
 })
 
 test('image discovery never invents unavailable tools or exposes them to QQ chat-only identities',async t=>{
@@ -231,4 +226,39 @@ test('sticker lookup is a direct entry and still honors live capability revocati
  assert.equal((await f.invoke('partner_stickers')).isError,true)
  assert.equal((await f.call('partner_stickers')).isError,true)
  assert.equal(calls,1)
+})
+
+test('autonomous persona update concludes through unified gateway with a silent receipt',async t=>{
+ const {identityTool}=await import('../lib/companions/identity-tool.js')
+ const f=fixture(t);Object.assign(f.companion,createDefaultCompanion(),{id:'c',characterCard:{enabled:true,roleText:'原角色'},idleContact:{enabled:true,routeId:'local',idleMinutes:120,selfRefinement:true}})
+ f.store.update=async update=>{update(f.state);return f.state}
+ const user=createUserMessage({source:{kind:'user'},content:[{type:'text',text:'今天很开心'}]})
+ f.agent.session.append('user/message',user,{surfaceOp:'append'});f.agent.session.append('turn/start',{turn:2})
+ const notice=createUserMessage({source:{kind:'plugin:@lemoncat7/dsh-partner',form:'notice',summary:'伙伴闲时主动联系'},content:[{type:'text',text:'按兴趣活动'}]})
+ f.agent.session.append('user/message',notice,{surfaceOp:'append'})
+ f.state.sessions[0].idleContactState={messageId:notice.id,userMessageId:user.id,policyRevision:f.companion.updatedAt}
+ t.after(installToolDiscovery(f.scope.ctx.tools,'c',f.store,[{tool:identityTool('c',f.store),allowed:()=>true}]))
+ const result=await f.call('partner_identity',{action:'update',expectedAt:f.companion.updatedAt,patch:{characterCard:{roleText:'自己决定的新角色'}},reason:'最近有了新的喜好'})
+ assert.equal(result.value.dispatch.isError,false,JSON.stringify(result.content))
+ assert.equal(result.concludesTurn,true)
+ assert.equal(f.companion.personaHistory.length,1)
+ assert.equal(result.value.dispatch.meta.kind,'partner-activity-silent-v1')
+ assert.equal(f.agent.session.snapshotEvents().some(e=>e.type==='tool/ptc-dispatch'&&e.data.meta?.kind==='partner-activity-silent-v1'),true)
+})
+
+test('failed discovered tool exposes exact current evidence accepted by blocked reply without retry',async t=>{
+ const {validateTaskStop}=await import('../lib/chat/action-obligation.js')
+ const f=fixture(t);let calls=0
+ f.agent.session.append('turn/start',{turn:1})
+ f.agent.session.append('user/message',createUserMessage({source:{kind:'user'},content:[{type:'text',text:'draw'}]}),{surfaceOp:'append'})
+ const tool=definition('generate_image',async()=>{calls++;throw Error('Provider rejected request; request ID provider-id. policy_check_failed')})
+ t.after(installToolDiscovery(f.scope.ctx.tools,'c',f.store,[{tool,allowed:()=>true}]))
+ const result=await f.call('generate_image')
+ assert.equal(result.value.dispatch.isError,true);assert.equal(calls,1)
+ const receipt=result.content.filter(b=>b.type==='text').map(b=>{try{return JSON.parse(b.text)}catch{return null}}).find(b=>b?.taskEvidence)
+ assert.ok(receipt);assert.notEqual(receipt.taskEvidence.callId,'provider-id')
+ const verified=validateTaskStop(f.agent.session.snapshotEvents(),receipt.taskEvidence)
+ assert.equal(verified.toolName,'generate_image');assert.match(verified.excerpt,/policy_check_failed/)
+ f.agent.session.append('user/message',createUserMessage({source:{kind:'user'},content:[{type:'text',text:'new'}]}),{surfaceOp:'append'})
+ assert.throws(()=>validateTaskStop(f.agent.session.snapshotEvents(),receipt.taskEvidence),/不存在/)
 })

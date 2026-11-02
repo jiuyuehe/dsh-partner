@@ -128,7 +128,18 @@
 .dsh-partner-affection-line > span:first-child { flex: 1; }
 .dsh-partner-affection-line strong { margin-left: 6px; font-variant-numeric: tabular-nums; }
 .dsh-partner-affection-line small, .dsh-partner-affection-caption { color: var(--partner-text-secondary); font-size: 12px; }
-.dsh-partner-affection-track { height: 6px; background: var(--partner-control); border: 1px solid var(--partner-border); border-radius: 999px; overflow: hidden; margin: 10px 0 6px; }
-.dsh-partner-affection-track > span { display: block; height: 100%; width: 100%; background: var(--partner-accent-strong); transform-origin: left center; transition: transform .3s ease; }
+.dsh-partner-affection-track { position: relative; height: 6px; background: var(--partner-control); border: 1px solid var(--partner-border); border-radius: 999px; overflow: hidden; margin: 10px 0 6px; }
+.dsh-partner-affection-track > span { position: absolute; display: block; height: 100%; background: var(--partner-accent-strong); }
+.dsh-partner-affection-track > span[data-negative="true"] { background: var(--partner-danger); }
+.dsh-partner-affection-track > i { position: absolute; left: 50%; top: 0; height: 100%; width: 1px; background: var(--partner-text-secondary); }
+.dsh-partner-affection-scale { display: flex; justify-content: space-between; font-size: 11px; color: var(--partner-text-secondary); margin-bottom: 8px; }
+.dsh-partner-affection-history { padding-left: 20px; font-size: 12px; overflow-wrap: anywhere; }
+.dsh-partner-affection-history li { margin-block: 12px; }
+.dsh-partner-affection-history p { margin-block: 4px; }
 .dsh-partner-affection-error { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
 @media (prefers-reduced-motion: reduce) { .dsh-partner-affection-track > span { transition: none; } }
+
+.dsh-partner-persona-option { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.dsh-partner-persona-option > div { min-width: 0; display: grid; gap: 4px; }
+.dsh-partner-persona-option small { color: var(--partner-text-secondary); font-size: 12px; line-height: 1.4; }
+.dsh-partner-persona-option > button { flex: none; }

@@ -36,7 +36,7 @@ test('discovery and ordinary chat stay immediate; autonomous/internal turns neve
  const g=new TaskPreambleGate(()=>events,async()=>assert.fail('must not send'))
  assert.equal(await g.before('generate_image',{}),undefined);await assert.rejects(g.acknowledge('hello'))
 })
-test('real unified entry blocks image execution, delivers progress without concluding, then executes exactly once',async t=>{
+test('native entry blocks image execution, delivers progress without concluding, then executes exactly once',async t=>{
  const root=new Context();root.provide('systemPrompt',{tools:()=>()=>{}});new ToolRuntime(root)
  const agent={session:Session.create('preamble'),options:{}},scope=createScope(root,agent);agent.ctx=scope.ctx
  t.after(()=>scope.dispose())
@@ -48,16 +48,16 @@ test('real unified entry blocks image execution, delivers progress without concl
  agent.session.append('turn/start',{turn:1})
  agent.session.append('user/message',createUserMessage({source:{kind:'user'},content:[{type:'text',text:'画张图'}]}),{surfaceOp:'append'})
  let seq=0
- const call=(name,args={})=>root.tools.execute({name:'partner_tools',arguments:{action:'call',name,argumentsJson:JSON.stringify(args)},agent,signal:new AbortController().signal,callId:'call-'+seq++})
+ const call=async(name,args={})=>{const request={name,arguments:args,agent,signal:new AbortController().signal,callId:'call-'+seq++};agent.session.append('tool/call',{name,arguments:JSON.stringify(args),callId:request.callId});const result=await root.tools.execute(request);agent.session.append('tool/result',JSON.parse(JSON.stringify({message:{id:request.callId,role:'tool',source:{kind:'tool',callId:request.callId},toolCallId:request.callId,content:result.content,isError:result.isError},meta:result.meta})),{surfaceOp:'append'});return result}
  let collected=0
  t.after(scope.ctx.tools.register({name:'partner_qq',description:'QQ',parameters:{type:'object'},output:{schema:{type:'object'},render:()=>[]},execute:async()=>{collected++;return {ok:true}}}))
- const sticker=await call('partner_qq',{action:'call',operation:'add_custom_face'});assert.equal(sticker.value.dispatch.isError,true);assert.equal(collected,0);assert.deepEqual(sent,[])
+ const sticker=await call('partner_qq',{action:'call',operation:'add_custom_face'});assert.equal(sticker.isError,true);assert.equal(collected,0);assert.deepEqual(sent,[])
  const deny=scope.ctx.on('tools/pre-execute',async(exec,next)=>exec.name==='partner_qq'?{kind:'deny',reason:'permission denied'}:next())
- const denied=await call('partner_qq',{action:'call',operation:'add_custom_face'});assert.equal(denied.value.dispatch.isError,true);assert.equal(collected,0);deny()
- const blocked=await call('generate_image');assert.equal(blocked.value.dispatch.isError,true);assert.equal(executions,0)
- const ack=await call('partner_chat_progress',{text:'等着，我来画。'});assert.equal(ack.value.dispatch.isError,false);assert.ok(!ack.concludesTurn);assert.deepEqual(sent,['等着，我来画。'])
- const collection=await call('partner_qq',{action:'call',operation:'add_custom_face'});assert.equal(collection.value.dispatch.isError,false);assert.equal(collected,1);assert.equal(sent.length,1)
- const image=await call('generate_image');assert.equal(image.value.dispatch.isError,false);assert.equal(executions,1)
+ const denied=await call('partner_qq',{action:'call',operation:'add_custom_face'});assert.equal(denied.isError,true);assert.equal(collected,0);deny()
+ const blocked=await call('generate_image');assert.equal(blocked.isError,true);assert.equal(executions,0)
+ const ack=await call('partner_chat_progress',{text:'等着，我来画。'});assert.equal(ack.isError,false);assert.ok(!ack.concludesTurn);assert.deepEqual(sent,['等着，我来画。'])
+ const collection=await call('partner_qq',{action:'call',operation:'add_custom_face'});assert.equal(collection.isError,false);assert.equal(collected,1);assert.equal(sent.length,1)
+ const image=await call('generate_image');assert.equal(image.isError,false);assert.equal(executions,1)
  dispose();assert.equal(scope.ctx.tools.get('partner_chat_progress',agent),undefined)
 })
 

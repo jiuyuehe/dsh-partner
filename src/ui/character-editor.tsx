@@ -1,3 +1,4 @@
+import { AffectionPanel } from './affection-panel.js'
 import { renderIdentityRelationship } from '../character/relationship-adapter.js'
 import { PERSONA_REQUEST_EXAMPLE } from '../character/identity-guide.js'
 import { StickerLibraryDialog } from './sticker-library.js'
@@ -32,7 +33,7 @@ const SAMPLE: CharacterCard = {
 避免：下雨天记得带伞哦！你可以在家看书、听音乐或者看电影。`,
 }
 
-export function CharacterEditor({ companion, card, disabled, onChange, relationshipText }: { active?: boolean; relationshipText: string; companion: CompanionView; card?: CharacterCard; disabled: boolean; onChange(card: CharacterCard): void }): JSX.Element {
+export function CharacterEditor({ companion, card, disabled, onChange, relationshipText, active = false }: { active?: boolean; relationshipText: string; companion: CompanionView; card?: CharacterCard; disabled: boolean; onChange(card: CharacterCard): void }): JSX.Element {
   const [wizard, setWizard] = useState(false)
   const [section, setSection] = useState<'role' | 'chat' | 'trial'>('role')
   // An explicitly empty document remains editable rather than reopening the wizard.
@@ -44,6 +45,7 @@ export function CharacterEditor({ companion, card, disabled, onChange, relations
     <details className="dsh-partner-settings-advanced"><summary>怎么让 AI 帮我生成人格？</summary><p className="dsh-partner-character-hint">在与这个伙伴的正式聊天中提出要求即可。AI 会读取当前设定，将角色自身的身份、性格、语气与通用示例写入角色设定，将与用户的关系、专属称呼与相处方式单独写入关系设定。AI 保存后会更新下方同一份设定；页面正在编辑时会保留未保存内容，并提示先载入最新版本。</p><Field label="通用需求示例" hint="复制到与伙伴的聊天中，将括号里的内容换成你的要求。"><textarea readOnly rows={5} value={PERSONA_REQUEST_EXAMPLE} onFocus={event=>event.currentTarget.select()} /></Field></details>
     {!hasContent ? <div className="dsh-partner-character-empty"><strong>把你想要的角色告诉 AI</strong><p>推荐先在正式聊天中提出要求，由 AI 生成并应用；也可以在这里手动填写内容。关闭角色聊天后继续使用基本身份。</p><button type="button" disabled={disabled} onClick={() => setWizard(true)}>手动编写设定</button></div> : <>
       <p className="dsh-partner-character-status">{card!.enabled ? '已启用 · 保存后下一轮应用新设定，旧对话不会决定新的语气。' : '已关闭 · 内容保留，伙伴继续使用基本身份。'}</p>
+      <AffectionPanel companion={companion} card={card!} active={active} disabled={disabled} onChange={onChange} />
       <SettingsSections<typeof section> label="角色聊天分段" value={section} onChange={setSection} sections={[
         {id: 'role', title: '角色设定', content: <fieldset disabled={disabled} className="dsh-partner-character-fields"><RoleFields card={card!} onChange={onChange} /><details className="dsh-partner-settings-advanced"><summary>背景资料 <small>可选 · {card!.lore.length} 条</small></summary><LoreFields card={card!} onChange={onChange} /></details></fieldset>},
         {id: 'chat', title: '聊天方式', content: <fieldset disabled={disabled} className="dsh-partner-character-fields"><ChatFields companionId={companion.id} card={card!} onChange={onChange} /></fieldset>},

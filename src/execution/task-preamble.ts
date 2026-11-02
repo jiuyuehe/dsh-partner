@@ -1,10 +1,11 @@
+import { chatReplyFromEvent } from '../chat/protocol.js'
 import { isInternalTaskNotice, isRequirementDeliveryReceipt } from '../channels/delivery-policy.js'
 import { isIdleContactNotice } from '../character/idle-contact.js'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ToolRuntime } from '@deepseek-ai/dsh-tools'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 
-const conversational = new Set(['partner_tools','partner_channel_access','partner_chat_progress','partner_chat_reply','partner_stickers','partner_qq_reply','partner_activity_finish','partner_identity','partner_sleep'])
+const conversational = new Set(['partner_tools','partner_channel_access','partner_agreement','partner_chat_say','partner_chat_progress','partner_chat_reply','partner_stickers','partner_qq_reply','partner_activity_finish','partner_identity','partner_affection','partner_sleep'])
 export function needsTaskPreamble(name:string,args:unknown):boolean {
   if(conversational.has(name))return false
   const input = args && typeof args === 'object' ? args as {action?:unknown;operation?:unknown} : undefined
@@ -23,9 +24,20 @@ function inputId(events:readonly SessionEvent[]):string|undefined {
   }
   return undefined
 }
+/** Only confirmed task speech bound to this exact user input releases work. */
+export function hasTaskPreamble(events:readonly SessionEvent[]):boolean {
+  const id=inputId(events)
+  if(!id)return false
+  for(const e of [...events].reverse()) {
+    if(e.type==='turn/start')break
+    const r=chatReplyFromEvent(e)
+    if(r?.delivered&&r.taskPreamble&&r.inputMessageId===id)return true
+  }
+  return false
+}
 export class TaskPreambleGate {
   private readonly sent=new Map<string,Promise<void>>()
-  constructor(private readonly events:()=>readonly SessionEvent[],private readonly send:(text:string)=>Promise<void>,private readonly active:()=>boolean=()=>true,private readonly short:()=>boolean=()=>false){}
+  constructor(private readonly events:()=>readonly SessionEvent[],private readonly send:(text:string)=>Promise<void>,private readonly active:()=>boolean=()=>true,private readonly short:()=>boolean=()=>false,private readonly unified=false){}
   async acknowledge(text:string,inlineDetails=false):Promise<void>{
     const id=inputId(this.events())
     if(!id || !this.active())throw Error('只有当前用户私聊任务可以发送前置回应，内部任务和自主活动不能使用')
@@ -40,6 +52,7 @@ export class TaskPreambleGate {
     if(!this.active() || !needsTaskPreamble(name,args))return
     const id=inputId(this.events())
     if(!id)return
+    if(this.unified)return hasTaskPreamble(this.events())?undefined:'本次工作尚未执行：先用 partner_chat_say，text 按当前人格简短说明准备做什么，beforeTools:true；确认送达后再执行。普通接话不能冒充动作告知，不要另发重复的前置回应。'
     let pending=this.sent.get(id)
     if(!pending){
       const message=[...this.events()].reverse().find(e=>e.type==='assistant/message'||e.type==='user/message'||e.type==='turn/start')
@@ -54,10 +67,10 @@ export class TaskPreambleGate {
   }
 }
 /** Scoped to one active channel reply; no extra model or hardcoded spoken text. */
-export function installTaskPreamble(agent:Agent,send:(text:string)=>Promise<void>,active:()=>boolean=()=>true,short:()=>boolean=()=>false):()=>void {
+export function installTaskPreamble(agent:Agent,send:(text:string)=>Promise<void>,active:()=>boolean=()=>true,short:()=>boolean=()=>false,unified=false):()=>void {
   const tools=agent.ctx.tools as ToolRuntime
-  const gate=new TaskPreambleGate(()=>agent.session.snapshotEvents(),send,active,short)
-  const unregister=tools.register({
+  const gate=new TaskPreambleGate(()=>agent.session.snapshotEvents(),send,active,short,unified)
+  const unregister=unified?()=>{}:tools.register({
     name:'partner_chat_progress',
     description:'私聊任务开始前按当前人格自然接话，遵循当前闲聊节奏：短句接话只用半句或一句说准备做什么；自然模式简述动作，展开模式可说明必要步骤（例如核实什么或生成什么），保留角色称呼、语气与当前对话习惯；不只说俏皮话，也不写客服式进度播报。立即发送 text，确认投递后返回，不结束回合；随后继续实际调查、生图或执行，最后再正常答复。一轮只发送一次，不能用于自主活动或内部任务。计划使用将要做的语气，不把尚未调用的工具说成已执行或已完成；没有真实权限拒绝结果时不要声称账号无权限。',
     parameters:{type:'object',properties:{text:{type:'string',minLength:1,maxLength:1200},inlineDetails:{type:'boolean',description:'仅用户本轮明确要求完整计划时使用，允许展开前置回应。'}},required:['text'],additionalProperties:false},

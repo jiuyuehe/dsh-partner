@@ -1,3 +1,4 @@
+import { affectionTool } from '../character/affection-tool.js'
 import {workflowProtocol} from './workflow-protocols.js'
 import {workExecutionTool} from '../execution/work-tool.js'
 import { idleActivityFinishTool } from '../character/activity-tool.js'
@@ -80,6 +81,7 @@ export class PartnerAgentComposition {
       add(textTool({name:'partner_workflow',description:'按需读取已提供的工作工具操作流程，不执行任务、不改变权限。',parameters:actionParameters(['inspect'],{tool:{type:'string'}},['tool']),async execute(raw,exec){const input=record(raw);const name=requiredText(input.tool,'tool',120);if(!ctx.tools.get(name,exec.agent))throw Error('工具当前不可用');return protocol(name)||'此工具没有额外工作流程，请查看工具自身说明。'}}))
       if (this.sleepToolFactory) add(this.sleepToolFactory(companion.id))
       add(identityTool(companion.id, this.store))
+      add(affectionTool(companion.id, this.store))
       add(idleActivityFinishTool(companion.id, this.store))
       for (const tool of this.mcp?.definitions(companion.id) ?? []) register(tool, 'mcp')
       if (this.attachmentToolFactory) add(this.attachmentToolFactory(companion.id))

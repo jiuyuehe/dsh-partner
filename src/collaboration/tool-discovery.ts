@@ -1,3 +1,4 @@
+import { AGREEMENT_GUIDANCE } from '../chat/agreements.js'
 import type {ToolDefinition,ToolRuntime,ToolRunContext,ToolExecutionResult} from '@deepseek-ai/dsh-tools'
 import {ToolCallId} from '@deepseek-ai/dsh-llm'
 import {scopeTarget} from '@deepseek-ai/dsh-scope'
@@ -6,7 +7,12 @@ import {resolveToolAccess} from '../execution/tool-access-adapter.js'
 import {discoveredToolProtocol} from '../character/prompt-projection.js'
 
 export interface DiscoverableTool {tool:ToolDefinition;allowed:()=>boolean;protocol?:(exec:ToolRunContext)=>string}
-export const PARTNER_TOOL_ENTRIES=['partner_tools','partner_channel_access','partner_memory_recall','partner_work_execute','partner_chat_reply','partner_chat_progress','partner_stickers'] as const
+export const PARTNER_TOOL_ENTRIES=['partner_tools','partner_channel_access','partner_memory_recall','partner_work_execute','partner_chat_reply','partner_agreement','partner_chat_say','partner_stickers'] as const
+// Track actual registrations, not a name prefix: other plugins keep ownership.
+const ownedTools=new WeakMap<PartnerStore,Map<string,Map<object,Set<string>>>>()
+export function isPartnerDiscoveryTool(store:PartnerStore,owner:string,name:string):boolean {
+ return [...(ownedTools.get(store)?.get(owner)?.values()??[])].some(names=>names.has(name))
+}
 const GROUPS=[
  {id:'chat',title:'聊天回复',description:'文字、表情与语音'},
  {id:'memory',title:'回忆',description:'长期记忆与历史对话检索'},
@@ -22,12 +28,12 @@ const GROUPS=[
 ]
 const IMAGE_ALIASES=['生图','画图','绘图','生成图片','图片生成','图生图','改图','编辑图片','图片编辑','画一张','画张','绘制','图片','image generation','image editing']
 function toolSearchMatches(tool:ToolDefinition,query:string):boolean {
- return `${tool.name} ${tool.description}`.toLocaleLowerCase().includes(query) || tool.name==='generate_image' && IMAGE_ALIASES.some(alias=>alias.includes(query)||query.includes(alias))
+ return `${tool.name} ${tool.description}`.toLocaleLowerCase().includes(query) || ['generate_image','image_gen.imagegen'].includes(tool.name) && IMAGE_ALIASES.some(alias=>alias.includes(query)||query.includes(alias))
 }
 function category(name:string):string {
  if(name==='partner_memory_recall')return 'memory'
- if(name==='generate_image')return 'media'
- if(['partner_chat_reply','partner_chat_progress','partner_stickers','partner_qq_reply'].includes(name))return 'chat'
+ if(['generate_image','image_gen.imagegen'].includes(name))return 'media'
+ if(['partner_chat_reply','partner_agreement','partner_chat_say','partner_chat_progress','partner_stickers','partner_qq_reply'].includes(name))return 'chat'
  if(/identity|sleep|avatar|activity/.test(name))return 'identity'
  if(/task_board|requirements|collaborate|work_execute|workflow/.test(name))return 'work'
  if(/schedule/.test(name))return 'automation'
@@ -38,12 +44,19 @@ function category(name:string):string {
  return 'other'
 }
 const PERSONA_REFERENCE_CALL = JSON.stringify({action:'call',name:'partner_identity',argumentsJson:JSON.stringify({action:'reference'})})
-export const TOOL_DISCOVERY_PROMPT='partner_channel_access 查询真实渠道权限摘要，partner_tools 分页查询和调用能力。partner_work_execute 是直接可调用的调查与多步执行入口，无需先查询目录或 describe。partner_memory_recall 是直接公开的基础回忆工具，也可通过统一入口调用，无需先加载；所有聊天账号可用，按真实会话检索。默认渠道沿用既有授权，QQ 由渠道适配器核验账号；不接受模型自报账号或权限。先用 list 查询（可按 category/query 缩小），describe 或 load 查看参数，再用 partner_tools action=call、name=真实工具名、argumentsJson=原工具参数的 JSON 字符串执行；不会另行向顶层工具表添加工具。用户明确要求生成或编辑图片时，先查询 media 分类或 query=image；若 generate_image 可用，describe 后通过本入口 call 实际生成，生成成功仅表示文件已保存；接着 describe/call partner_send_attachment，path 填返回文件路径，确认渠道回执后再简短接话。本地 Markdown 图片链接不能代替真实图片发送，不以口头承诺、提示词或虚构图片代替工具执行。顶层没有 generate_image 不表示没有生图能力；只有查询当前授权目录后才能说明能力是否缺失。回应和结果说明保持当前人格。私聊耗时任务先 call partner_chat_progress，argumentsJson 为 {"text":"按当前人格自然回应，并说明接下来准备做的具体事情"} 的 JSON 字符串；成功后再工作，此工具不结束回合。partner_chat_reply、partner_chat_progress 和 partner_stickers 提供在顶层时直接调用，不必先查目录。最终文字回复使用 partner_chat_reply，参数为 {"messages":[{"text":"要说的话"}]}，表情独立使用 {"stickerId":"库内ID"}；先完成工作再提交最终回复。需分条时在 messages 中提交多个 text 条目，普通正文换行不会分条；未提供聊天工具时用普通最终回答。人格参考模板在 partner_identity 内置，包含基本身份、角色设定、关系设定和 qq-bridge 大肥鱼原卡；用户要参考时直接向 partner_tools 传入 '+PERSONA_REFERENCE_CALL+'，无需搜索 cosplay 配置或文件。普通修改和自主优化不要求读模板。每次调用都会再次检查实时权限，原工具审批、超时、取消与终结行为保留。'
+export const TOOL_DISCOVERY_PROMPT=AGREEMENT_GUIDANCE+'\n'+'partner_channel_access 查询真实渠道权限摘要，partner_tools 分页查询和调用能力。partner_work_execute 是直接可调用的调查与多步执行入口，无需先查询目录或 describe。partner_memory_recall 是直接公开的基础回忆工具，也可通过统一入口调用，无需先加载；所有聊天账号可用，按真实会话检索。默认渠道沿用既有授权，QQ 由渠道适配器核验账号；不接受模型自报账号或权限。先用 list 查询（可按 category/query 缩小），describe 或 load 查看参数，再用 partner_tools action=call、name=真实工具名、argumentsJson=原工具参数的 JSON 字符串执行；不会另行向顶层工具表添加工具。伙伴入口只管理本插件注册的能力；其他插件和宿主工具保留自己的顶层入口，直接按其说明调用，不经 partner_tools 转调。生图优先用顶层 image_gen.imagegen，兼容 generate_image；一次请求只调用其中一个，动作登记使用实际工具名。图片生成后用 partner_send_attachment 交付返回文件，确认渠道回执后再回复；不要把本地文件链接当作已发送。回应和结果说明保持当前人格。私聊任务与普通接话统一使用 partner_chat_say。执行工具前 call partner_chat_say，argumentsJson 为 {"text":"按当前人格简短说准备做什么","beforeTools":true,"expectedTools":["本轮准备调用的真实工具名"]} 的 JSON 字符串；成功后再工作，此工具不结束回合。partner_chat_say、partner_chat_reply 和 partner_stickers 提供在顶层时直接调用，不必先查目录。当前用户聊天可以用 partner_chat_say 先说一句并继续本轮，确认送达后再自然补话；不必等自主活动。说完使用 partner_chat_reply；当前输入后已有接话送达且没有新话时可 messages:[] 安静结束。最终文字回复使用 partner_chat_reply，参数为 {"messages":[{"text":"要说的话"}]}，表情独立使用 {"stickerId":"库内ID"}；先完成工作再提交最终回复。需分条时在 messages 中提交多个 text 条目，普通正文换行不会分条；未提供聊天工具时用普通最终回答。人格参考模板在 partner_identity 内置，包含基本身份、角色设定、关系设定和 qq-bridge 大肥鱼原卡；用户要参考时直接向 partner_tools 传入 '+PERSONA_REFERENCE_CALL+'，无需搜索 cosplay 配置或文件。普通修改和自主优化不要求读模板。每次调用都会再次检查实时权限，原工具审批、超时、取消与终结行为保留。'
 
 /** Stable model-facing entries; original definitions remain registered in scope
  * so the normal DSH execution pipeline owns validation, policy and cancellation. */
 export function installToolDiscovery(runtime:ToolRuntime,owner:string,store:PartnerStore,entries:DiscoverableTool[]):()=>void {
  const disposers:Array<()=>void>=[]
+ const registrations=ownedTools.get(store)??new Map<string,Map<object,Set<string>>>()
+ ownedTools.set(store,registrations)
+ const scopes=registrations.get(owner)??new Map<object,Set<string>>()
+ registrations.set(owner,scopes)
+ const token={}
+ scopes.set(token,new Set(entries.map(entry=>entry.tool.name)))
+ disposers.push(()=>{scopes.delete(token);if(!scopes.size&&registrations.get(owner)===scopes)registrations.delete(owner)})
  let closed=false
  const guard=(exec:ToolRunContext)=>{
   const sessionId=exec.agent?.session.id,state=store.snapshot()
@@ -54,19 +67,16 @@ export function installToolDiscovery(runtime:ToolRuntime,owner:string,store:Part
   const access=resolveToolAccess({agent:exec.agent!,state:store.snapshot()})
   const tools=new Map<string,ToolDefinition>()
   for(const entry of entries){const tool=runtime.get(entry.tool.name,exec.agent);if(entry.allowed()&&tool)tools.set(tool.name,tool)}
-  // Include already-scoped host tools, without reviving restricted or unloaded definitions.
-  for(const schema of runtime.schemas(exec.agent)) {
-   if(entries.some(e=>e.tool.name===schema.name))continue
-   const tool=runtime.get(schema.name,exec.agent);if(tool)tools.set(schema.name,tool)
-  }
   return [...tools.values()].filter(tool=>!['partner_tools','partner_channel_access','run_code'].includes(tool.name)&&access.sendTools&&(!access.allowedTools||access.allowedTools.includes(tool.name)))
  }
- const visible=(tool:ToolDefinition)=>({name:tool.name,category:category(tool.name),summary:(tool.name==='generate_image'?'生图、画图、图生图、图片编辑。'+tool.description:tool.description).slice(0,160)})
+ const visible=(tool:ToolDefinition)=>({name:tool.name,category:category(tool.name),summary:(['generate_image','image_gen.imagegen'].includes(tool.name)?'生图、画图、图生图、图片编辑。'+tool.description:tool.description).slice(0,160)})
  const render=(_args:unknown,value:unknown)=>{
-  const result=value as {dispatch?:ToolExecutionResult}
-  return result.dispatch?result.dispatch.content:[{type:'text' as const,text:JSON.stringify(value)}]
+  const result=value as {dispatch?:ToolExecutionResult;failureReceipt?:{kind:'tool_error';callId:string;excerpt:string;toolName:string}}
+  return result.dispatch?[...result.dispatch.content,...(result.failureReceipt?[{type:'text' as const,text:JSON.stringify({taskEvidence:{kind:result.failureReceipt.kind,callId:result.failureReceipt.callId,excerpt:result.failureReceipt.excerpt},toolName:result.failureReceipt.toolName,notice:'这是本次实际失败的工具回执，可用于结束失败任务。callId 是工具调用编号，不是服务报错中的 request ID；不要重试来获取证据。'})}]:[])]:[{type:'text' as const,text:JSON.stringify(value)}]
  }
- const unavailable=(name:string|undefined,exec:ToolRunContext)=>new Error(!name||!runtime.get(name,exec.agent)
+ const unavailable=(name:string|undefined,exec:ToolRunContext)=>new Error(name&&!entries.some(entry=>entry.tool.name===name)&&runtime.get(name,exec.agent)
+  ? '此工具不属于伙伴插件，请使用其自身提供的入口，不经 partner_tools 转调；权限仍以当前渠道为准。'
+  : !name||!runtime.get(name,exec.agent)
   ? '工具在当前执行上下文中未注册或已结束，请重新查询目录。这不表示账号没有权限，不要据此要求用户更换账号或授权。'
   : '当前渠道未授权此能力或能力已撤回，请查询 partner_channel_access 核实当前能力。')
  const invoke=async(name:string,args:unknown,exec:ToolRunContext)=>{
@@ -82,7 +92,8 @@ export function installToolDiscovery(runtime:ToolRuntime,owner:string,store:Part
   exec.agent!.session.append('tool/ptc-dispatch',{...log,isError:result.isError,content,...(result.meta===undefined?{}:{meta:result.meta}),...(result.error?.info===undefined?{}:{error:result.error.info})})
   for(const context of result.additionalContexts??[])exec.deferContext(context)
   if(result.concludesTurn)exec.concludeTurn()
-  return {dispatch:result}
+  const errorText=content.flatMap(b=>b.type==='text'?[b.text]:[]).join('\n')
+  return {dispatch:result,...(result.isError&&errorText.trim()?{failureReceipt:{kind:'tool_error' as const,callId:subCallId,excerpt:errorText.trim().slice(0,500),toolName:name}}:{})}
  }
  try {
   for(const entry of entries)disposers.push(runtime.register({...entry.tool,execute:async(args,exec)=>{if(!entry.allowed())throw Error('能力已撤回');return entry.tool.execute(args,exec)}}))
@@ -106,7 +117,7 @@ export function installToolDiscovery(runtime:ToolRuntime,owner:string,store:Part
      ...(access.denialReason?{notice:access.denialReason}:{})}
    }
   }))
-  disposers.push(runtime.register({name:'partner_tools',description:'统一查询、调用已授权工具。list 按 category/query 返回概要，describe（或兼容 load）返回完整参数；call 使用 name 和 argumentsJson（原工具参数的 JSON 字符串）执行，仍走原权限、审批和取消流程。切换账号不增删顶层工具。人格参考模板直接调用：'+PERSONA_REFERENCE_CALL+'。聊天调用 partner_chat_reply，原工具参数为 {"messages":[{"text":"回复内容"}]}，须序列化到 argumentsJson；表情先查询 partner_stickers。分条聊天用多个 text 条目；仅需一条或聊天工具不可用时可直接最终回答。',
+  disposers.push(runtime.register({name:'partner_tools',description:'仅查询、调用伙伴插件自身已授权工具；其他插件直接使用自己的入口。list 按 category/query 返回概要，describe（或兼容 load）返回完整参数；call 使用 name 和 argumentsJson（原工具参数的 JSON 字符串）执行，仍走原权限、审批和取消流程。切换账号不增删顶层工具。人格参考模板直接调用：'+PERSONA_REFERENCE_CALL+'。聊天调用 partner_chat_reply，原工具参数为 {"messages":[{"text":"回复内容"}]}，须序列化到 argumentsJson；表情先查询 partner_stickers。分条聊天用多个 text 条目；仅需一条或聊天工具不可用时可直接最终回答。',
    parameters:{type:'object',properties:{action:{type:'string',enum:['list','describe','load','unload','call']},category:{type:'string'},query:{type:'string',maxLength:80},name:{type:'string'},offset:{type:'integer',minimum:0},argumentsJson:{type:'string',maxLength:200000}},required:['action'],additionalProperties:false},
    output:{schema:{type:'object'},render},presentCall:()=>({card:'generic',title:'伙伴能力'}),
    async execute(raw,exec){

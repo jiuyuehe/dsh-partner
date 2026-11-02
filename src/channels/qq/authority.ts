@@ -47,6 +47,6 @@ export const qqToolAccessAdapter: ToolAccessAdapter = {
     if (!qqChatOnly(agent, state, events)) return { sendTools: true }
     const full=state as PartnerState
     const mayFinish=(full.companions??[]).some(c=>canFinishIdleActivity(c.id,full,agent.session.id,events??agent.session.snapshotEvents()))
-    return { sendTools: true, allowedTools: ['partner_tools', 'partner_channel_access', 'partner_chat_reply', 'partner_stickers', 'partner_qq', 'partner_qq_reply', 'partner_memory_recall', 'partner_chat_progress', ...(mayFinish?['partner_activity_finish']:[])], denialReason: QQ_CHAT_ONLY_REASON }
+    return { sendTools: true, allowedTools: ['partner_tools', 'partner_channel_access', 'partner_chat_reply', 'partner_stickers', 'partner_qq', 'partner_qq_reply', 'partner_memory_recall', 'partner_agreement','partner_chat_say','partner_chat_progress', ...(mayFinish?['partner_activity_finish']:[])], denialReason: QQ_CHAT_ONLY_REASON }
   },
 }

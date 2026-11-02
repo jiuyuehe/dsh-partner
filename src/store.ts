@@ -1,3 +1,4 @@
+import { validateAgreements } from './chat/agreements.js'
 import { mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { randomBytes } from 'node:crypto'
@@ -298,6 +299,13 @@ function validateState(value: unknown): asserts value is PartnerState {
   validateMcpState(state)
   validatePushState(state)
   for (const companion of state.companions!) {
+    validateAgreements(companion.temporaryAgreements)
+    if (companion.affection) {
+      const a=companion.affection
+      if (!Number.isFinite(a.score) || a.score < -100 || a.score > 100 || (a.history !== undefined && (!Array.isArray(a.history) || a.history.length > 40 || a.history.some(h=>!h || !Number.isFinite(h.at) || typeof h.turnId !== 'string' || ![-3,-2,-1,1].includes(h.delta) || !Number.isFinite(h.score) || h.score < -100 || h.score > 100 || typeof h.reason !== 'string' || h.reason.length > 300 || typeof h.evidence !== 'string' || h.evidence.length > 300)))) throw Error('invalid affection state')
+    }
+    if (companion.idleContact?.selfRefinement !== undefined && typeof companion.idleContact.selfRefinement !== 'boolean') throw Error('invalid self refinement switch')
+    if (companion.personaHistory !== undefined && (!Array.isArray(companion.personaHistory) || companion.personaHistory.length > 12 || companion.personaHistory.some(e => !e || !Number.isFinite(e.at) || typeof e.reason !== 'string' || e.reason.length > 500 || !e.before || !e.after || JSON.stringify(e).length > 250000))) throw Error('invalid persona history')
     const config = companion.notificationDelivery
     if (config === undefined) continue
     if (!config || !['recent','selected'].includes(config.mode) || !Array.isArray(config.targets) || config.targets.length > 50 || (config.mode === 'selected' && !config.targets.length) || config.targets.some(t => !t || typeof t.channelId !== 'string' || !t.channelId || typeof t.userId !== 'string' || !t.userId)) throw new Error('invalid companion notification settings')

@@ -41,6 +41,14 @@ export function applyIdentity(state: PartnerState, companion: Companion, raw: un
     const input = record(raw, 'identity')
     for (const key of ['name', 'role', 'description', 'instructions']) if (typeof input[key] !== 'string') throw new Error('请提交完整身份内容')
   }
+  if (source === 'ai') {
+    const patch = record(raw, 'identity')
+    if (patch.idleContact !== undefined) {
+      const policy = patch.idleContact === null ? undefined : record(patch.idleContact, 'idleContact')
+      if (policy && 'selfRefinement' in policy) throw new Error('自主调整权限只能在页面设置')
+      if (!policy && companion.idleContact?.selfRefinement) throw new Error('不能通过清空活动设置修改自主调整权限')
+    }
+  }
   const next = patchIdentity(source === 'page' ? { name: '', role: '', description: '', instructions: '' } : companion, raw)
   if (next.idleContact?.enabled && !idleContactRouteAllowed(state, companion, next.idleContact.routeId)) throw new Error('请选择本伙伴可用的会话；渠道联系人须已授权')
   delete companion.identityDraft

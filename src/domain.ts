@@ -13,10 +13,12 @@ export type { CompanionCapability } from './capabilities.js'
 export type PairingStatus = 'pending' | 'approved' | 'blocked'
 
 export interface Companion {
+  temporaryAgreements?: import('./chat/agreements.js').TemporaryAgreement[]
   affection?: import('./character/affection.js').AffectionState
   toolDiscovery?: boolean
   sleepPolicy?: import('./character/sleep.js').SleepPolicy
   sleepState?: import('./character/sleep.js').SleepState
+  personaHistory?: import('./companions/persona-refinement.js').PersonaRevision[]
   identityDraft?: import('./companions/identity.js').CompanionIdentity
   idleContact?: import('./character/idle-contact.js').IdleContactPolicy
   characterCard?: CharacterCard

@@ -7,6 +7,7 @@ import { chatReplyFromEvent, type ChatReply } from './protocol.js'
  * This is a view only: no synthetic assistant messages or history rewrites.
  */
 export function nativeChatBlocks(reply: ChatReply, base = typeof document === 'undefined' ? undefined : document.baseURI): Array<{kind:'text';text:string}> {
+  if(reply.deliveryKind==='text'&&reply.delivered)return reply.spokenText?[{kind:'text',text:reply.spokenText}]:[]
   if(reply.delivered===true&&!reply.parts.length)return [{kind:'text',text:'[语音已发送]'+(typeof reply.spokenText==='string'?' '+reply.spokenText:'')}]
   return reply.parts.map(part => ({kind:'text', text:part.type==='text' ? part.text
     : part.type==='emoji' ? (part.emoji.previewUrl ? `![${part.emoji.label.replace(/[\\\[\]]/g,'')}](${encodeURI(part.emoji.previewUrl).replace(/[()]/g,c=>`%${c.charCodeAt(0).toString(16)}`)})` : `[表情：${part.emoji.label}]`) : `![${part.label.replace(/[\\\[\]]/g,'\\$&')}](${encodeURI(base ? new URL(part.url, base).href : part.url).replace(/[()]/g,c=>`%${c.charCodeAt(0).toString(16)}`)})`}))

@@ -302,3 +302,31 @@ test('idle continuation keeps user and own reply anchors when autonomous chatter
  assert.match(prompt,/partner_memory_recall/)
  assert.doesNotMatch(prompt,/闲下来时优先找一件|只有没有合适行动/)
 })
+
+test('activity context retains media-only replies and compact sticker identities without transport data',async()=>{
+ const {activityConversation,activityRecentMedia}=await import('../lib/character/idle-contact.js')
+ const emoji={provider:'qq-custom',id:'detective-pika',channelId:'ch',accountId:'account',label:'侦探皮卡丘 疑惑',previewUrl:'https://p.qpic.cn/private-preview'}
+ const events=[{type:'tool/result',time:1,data:{message:{isError:false},meta:{kind:'partner-chat-v1',parts:[{type:'emoji',emoji}]}}},
+ {type:'tool/result',time:2,data:{message:{isError:false},meta:{kind:'partner-chat-v1',parts:[{type:'image',attachment:{kind:'image',path:'/private/file.png'},url:'/private/url',label:'趴着的猫'}]}}}]
+ const before=structuredClone(events),context=activityConversation(events)
+ assert.equal(context.length,2)
+ assert.deepEqual(context[0].media,[{kind:'emoji',provider:'qq-custom',id:'detective-pika',label:'侦探皮卡丘 疑惑'}])
+ assert.deepEqual(context[1].media,[{kind:'image',label:'趴着的猫'}])
+ const recent=activityRecentMedia(events)
+ assert.deepEqual(recent,context)
+ assert.doesNotMatch(JSON.stringify(recent),/private-preview|private\/file|private\/url|accountId|channelId/)
+ assert.deepEqual(events,before)
+})
+test('idle and post-reply reminders preserve bounded older media outside the text window, excluding failures',async()=>{
+ const {activityRecentMedia}=await import('../lib/character/idle-contact.js')
+ const {postReplyActivityPrompt}=await import('../lib/character/post-reply.js')
+ const event=(id,isError=false)=>({type:'tool/ptc-dispatch',time:1,data:{isError,meta:{kind:'partner-chat-v1',parts:[{type:'text',text:'旧配文'+id},{type:'emoji',emoji:{provider:'qq-custom',id,channelId:'ch',accountId:'a',label:'表情'+id}}]}}})
+ const events=[...Array.from({length:8},(_,i)=>event(String(i))),event('failed',true),...Array.from({length:20},()=>({type:'assistant/message',data:{message:{content:[{type:'text',text:'后来聊了别的话'}]}}}))]
+ assert.deepEqual(activityRecentMedia(events).map(x=>x.media[0].id),['2','3','4','5','6','7'])
+ const {state,companion}=fixture()
+ for(const render of [idleActivityPrompt,postReplyActivityPrompt]){
+  const prompt=render(state,companion,events)
+  assert.match(prompt,/旧配文2/);assert.match(prompt,/旧配文7/);assert.doesNotMatch(prompt,/旧配文0|旧配文failed/)
+  assert.match(prompt,/提交记录不等于送达证明/)
+ }
+})

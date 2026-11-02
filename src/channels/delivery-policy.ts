@@ -83,7 +83,7 @@ export function channelReplyPartsAfter(events: readonly SessionEvent[], fromSeq:
     }
     else if (direct && chatReplyFromEvent(event)) {
       const reply=chatReplyFromEvent(event)!
-      chat = reply.parts; answer = ''
+      if(!reply.intermediate){chat = reply.parts; answer = ''}
       chatDelivered=chatDelivered||reply.delivered===true
       chatOriginRouteId = chatOriginRouteId === undefined ? reply.originRouteId : chatOriginRouteId === reply.originRouteId ? chatOriginRouteId : null
     }

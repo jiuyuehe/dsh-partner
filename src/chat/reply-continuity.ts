@@ -73,5 +73,5 @@ export function replyContinuity(sessionId: string, events: readonly SessionEvent
 export function renderReplyContinuity(sessionId: string, events: readonly SessionEvent[], sessions: readonly ChannelSession[]): string {
   const context = replyContinuity(sessionId, events, sessions)
   if (!context.historicalSleep.length && !context.confirmedMessages.length) return ''
-  return '【近期交流依据 · 程序记录】\n' + JSON.stringify({ historicalSleep: context.historicalSleep, confirmedMessages: context.confirmedMessages }) + '\nhistoricalSleep 是当时的状态，不代替当前状态；confirmedMessages 是已确认送达的前置消息或语音。没有依据时不补写原因。'
+  return '【近期交流依据 · 程序记录】\n' + JSON.stringify({ historicalSleep: context.historicalSleep, confirmedMessages: context.confirmedMessages }) + '\nhistoricalSleep 是当时的状态，不代替当前状态；confirmedMessages 是已确认送达的接话、前置消息或语音。没有依据时不补写原因。'
 }

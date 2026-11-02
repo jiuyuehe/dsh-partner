@@ -20,9 +20,9 @@ export function replyActivity(event:SessionEvent):ReplyActivity|undefined {
     // Terminal chat tools own their text; forwarding it here would deliver twice.
     if(event.data.message.content.some(block=>{
       if(block.type!=='tool-call')return false
-      if(block.name==='partner_chat_reply')return true
+      if(['partner_chat_reply','partner_chat_say'].includes(block.name))return true
       if(block.name!=='partner_tools')return false
-      try{return JSON.parse(block.arguments).name==='partner_chat_reply'}catch{return false}
+      try{return ['partner_chat_reply','partner_chat_say'].includes(JSON.parse(block.arguments).name)}catch{return false}
     }))return undefined
     const text=event.data.message.content.filter(block=>block.type==='text').map(block=>block.text).join('\n').trim()
     if(text)return {kind:'text',text}

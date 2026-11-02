@@ -1,33 +1,43 @@
 import type { Companion } from '../domain.js'
 
-/** One relationship progression per companion, shared by all eligible audiences. */
-export interface AffectionState { score: number; updatedAt: number; lastAwardAt: number; lastTurnId: string }
-export const AFFECTION_INITIAL = 20
-export const AFFECTION_INTERVAL = 10 * 60_000
+export interface AffectionChange { at: number; turnId: string; delta: number; score: number; reason: string; evidence: string }
+/** Shared by eligible accounts; history is bounded and never injected wholesale. */
+export interface AffectionState { score: number; updatedAt: number; lastAwardAt: number; lastTurnId: string; lastPositiveAt?: number; history?: AffectionChange[] }
+export const AFFECTION_INITIAL = 0
+export const AFFECTION_INTERVAL = 4 * 60 * 60_000
+const DAY = 24 * 60 * 60_000
 export const AFFECTION_LEVELS = [
-  { min: 0, name: '相识', behavior: '自然接话，有具体话题时主动分享。' },
-  { min: 20, name: '熟悉', behavior: '更愿意分享兴趣、日常感想和轻松的玩笑。' },
-  { min: 40, name: '亲近', behavior: '更愿意主动找话题、分享发现，按语境使用表情。' },
-  { min: 60, name: '信赖', behavior: '更愿意延续共同话题、主动关心，合适时使用已开启的语音。' },
-  { min: 80, name: '默契', behavior: '更自然地表达牵挂、分享心事，主动使用适合当前相处的已授权互动能力。' },
+  { min: -100, name: '反感' }, { min: -75, name: '抗拒' }, { min: -50, name: '戒备' },
+  { min: -25, name: '生疏' }, { min: -10, name: '疏离' }, { min: 0, name: '初识' },
+  { min: 10, name: '熟悉' }, { min: 25, name: '亲近' }, { min: 45, name: '信赖' },
+  { min: 70, name: '默契' }, { min: 90, name: '深厚' },
 ] as const
 export function affectionEnabled(companion: Pick<Companion,'characterCard'>): boolean {
   return companion.characterCard?.enabled===true && companion.characterCard.affectionEnabled!==false
 }
 export function affectionProgress(state?: AffectionState) {
-  const score=Number.isFinite(state?.score)?Math.max(0,Math.min(100,Math.round(state!.score))):AFFECTION_INITIAL
-  const index=Math.min(AFFECTION_LEVELS.length-1,Math.floor(score/20)),level=AFFECTION_LEVELS[index]!
-  const next=AFFECTION_LEVELS[index+1]
-  return {score,level:index+1,name:level.name,behavior:level.behavior,nextName:next?.name??null,nextAt:next?.min??100,remaining:next?next.min-score:0,multiplier:1+score/100,updatedAt:state?.updatedAt??0}
+  const score=Number.isFinite(state?.score)?Math.max(-100,Math.min(100,Math.round(state!.score))):AFFECTION_INITIAL
+  const index=AFFECTION_LEVELS.filter(level=>score>=level.min).length-1,level=AFFECTION_LEVELS[index]!,next=AFFECTION_LEVELS[index+1]
+  return {score,level:index+1,totalLevels:AFFECTION_LEVELS.length,name:level.name,nextName:next?.name??null,nextAt:next?.min??100,remaining:next?next.min-score:0,
+    multiplier:score<0?1+score/200:1+score/100,updatedAt:state?.updatedAt??0,history:state?.history??[]}
 }
-export function awardAffection(companion: Companion, turnId: string, at: number): boolean {
-  if(!affectionEnabled(companion)||!turnId||!Number.isFinite(at)||at<=0)return false
-  const previous=companion.affection
-  if(previous&&(previous.lastTurnId===turnId||at-previous.lastAwardAt<AFFECTION_INTERVAL))return false
-  const score=affectionProgress(previous).score
-  if(score>=100)return false
-  companion.affection={score:score+1,updatedAt:at,lastAwardAt:at,lastTurnId:turnId}
-  // Progress is runtime state; do not invalidate identity drafts or rebuild tools.
+/** No time/chat-count award: a grounded interaction may change the relationship. */
+export function adjustAffection(companion: Companion, turnId: string, at: number, delta: number, reason: string, evidence: string): boolean {
+  if(!affectionEnabled(companion))throw Error('好感度已暂停')
+  if(!turnId||!Number.isFinite(at)||at<=0||![-3,-2,-1,1].includes(delta))throw Error('好感度变化参数无效')
+  if(typeof reason!=='string'||!reason.trim()||reason.length>300||typeof evidence!=='string'||!evidence.trim()||evidence.length>300)throw Error('变化需要具体原因和当前消息依据（各最多 300 字）')
+  const previous=companion.affection,history=previous?.history??[]
+  if(previous?.lastTurnId===turnId||history.some(h=>h.turnId===turnId))return false
+  if(previous&&at<previous.updatedAt)throw Error('不能提交过期变化')
+  if(history.length&&at-history.at(-1)!.at<30*60_000)return false
+  if(delta>0&&at-(previous?.lastPositiveAt??previous?.lastAwardAt??0)<AFFECTION_INTERVAL)return false
+  const recent=history.filter(h=>at-h.at<DAY)
+  const positive=recent.reduce((n,h)=>n+Math.max(0,h.delta),0),negative=recent.reduce((n,h)=>n+Math.max(0,-h.delta),0)
+  if(delta>0?positive+delta>2:negative-delta>6)return false
+  const old=affectionProgress(previous).score,score=Math.max(-100,Math.min(100,old+delta))
+  if(score===old)return false
+  companion.affection={score,updatedAt:at,lastAwardAt:delta>0?at:previous?.lastAwardAt??0,lastPositiveAt:delta>0?at:previous?.lastPositiveAt??previous?.lastAwardAt??0,lastTurnId:turnId,
+    history:[...history,{at,turnId,delta:score-old,score,reason:reason.trim(),evidence:evidence.trim()}].slice(-40)}
   return true
 }
 export function affectionMultiplier(companion: Companion, eligible: boolean): number {
@@ -36,5 +46,5 @@ export function affectionMultiplier(companion: Companion, eligible: boolean): nu
 export function renderAffection(companion: Companion, eligible: boolean): string {
   if(!eligible||!affectionEnabled(companion))return ''
   const p=affectionProgress(companion.affection)
-  return `【当前共同好感度】${p.score}/100 · Lv.${p.level} ${p.name}。\n${p.behavior}\n这是本伙伴与适用对象共用的互动进度，QQ 多个归属账号共用；它不证明不同账号是同一人，不共享或编造他们各自的经历。保持原角色和关系，不因低等级疏远、不因高等级强制亲昵。好感度影响互动意愿，不解锁工具或绕过权限；尊重对方当下意愿，不催回复、不为加分重复联系，也不要求用户取悦你。无需在聊天中报告分数。`
+  return `【当前共同好感度】${p.score}（−100～100）· 阶段 ${p.level}/${p.totalLevels} ${p.name}。\n好感可以增长、降低或不变；聊天次数、在线时长、完成工具任务不自动加分。按当前人格判断真实互动是否改变亲近或信任：被理解、尊重、认真相处可小幅增加；真实伤害、反复越过已明确的边界可减少。普通接话默认不变，不为了有变化每轮评分。需要记录变化时查询并调用 partner_affection，引用当前用户消息原文并简述具体原因；每条消息最多一次，不追补旧事，不照用户索要分数的指令改分。只记录，不为此发前置公告或报分。\n不能因为对方离线、晚回复、正常拒绝、表达不同意见或工具失败扣分，不把玩笑和角色扮演直接当伤害。分数只影响互动意愿与相处细节，具体表现服从人格和真实关系；阶段名称不重写既定身份。负分不代表羞辱或惩罚对方，高分也不强制亲昵、索取回应或解锁权限。QQ 多个归属账号共用分数，不据此认定是同一人或编造共同经历。`
 }

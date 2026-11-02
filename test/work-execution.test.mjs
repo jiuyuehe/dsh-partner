@@ -91,21 +91,21 @@ test('original runtime guards still deny nested work operations; no chat or recu
  f.scope.ctx.tools.guard(e=>e.name==='blocked_operation'?'policy denied':undefined)
  f.setDriver(async({invoke})=>{
   assert.equal((await call(invoke,'blocked_operation')).value.dispatch.isError,true)
-  for(const name of ['partner_chat_reply','partner_chat_progress','partner_qq_reply','partner_sleep','partner_work_execute','run_code','partner_tools'])assert.equal((await call(invoke,name)).isError,true)
+  for(const name of ['partner_chat_reply','partner_agreement','partner_chat_say','partner_chat_progress','partner_qq_reply','partner_sleep','partner_work_execute','run_code','partner_tools'])assert.equal((await call(invoke,name)).isError,true)
   await invoke('partner_work_result',{...result,status:'blocked',facts:[],unknowns:['权限拒绝']})
  })
  const output=await f.invoke('partner_work_execute',{input:'任务'});assert.equal(output.isError,false);assert.equal(calls,0)
  const parsed=JSON.parse(output.value);assert.equal(parsed.execution.calls[0].success,false)
 })
-test('one persona preamble is required before work through unified entry; work does not end main turn',async t=>{
+test('one persona preamble is required before work through direct entry; work does not end main turn',async t=>{
  const f=fixture(t);const sent=[]
  t.after(installTaskPreamble(f.agent,async text=>sent.push(text)))
  t.after(installToolDiscovery(f.scope.ctx.tools,'c',f.store,[]))
  f.setDriver(async({invoke})=>{await invoke('partner_work_result',{...result,status:'unverified'})})
- const work=()=>f.invoke('partner_tools',{action:'call',name:'partner_work_execute',argumentsJson:JSON.stringify({input:'任务'})})
- assert.equal((await work()).value.dispatch.isError,true);assert.equal(f.requests(),0)
+ const work=()=>f.invoke('partner_work_execute',{input:'任务'})
+ assert.equal((await work()).isError,true);assert.equal(f.requests(),0)
  assert.equal((await f.invoke('partner_chat_progress',{text:'我去查查这东西怎么接'})).isError,false)
- const output=await work();assert.equal(output.value.dispatch.isError,false);assert.notEqual(output.concludesTurn,true)
+ const output=await work();assert.equal(output.isError,false);assert.notEqual(output.concludesTurn,true)
  assert.deepEqual(sent,['我去查查这东西怎么接'])
 })
 test('on-demand protocols describe without executing or granting permissions',async t=>{
