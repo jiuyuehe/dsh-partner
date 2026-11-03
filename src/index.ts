@@ -1,3 +1,4 @@
+import { InteractionReviewService } from './character/interaction-review.js'
 import { agreementTool } from './chat/agreements.js'
 import {qqReplyTool} from './channels/qq/reply-tool.js'
 import {qqActionTools} from './channels/qq/actions.js'
@@ -129,7 +130,7 @@ export function apply(context: Context, config: PartnerConfig): void {
     if (store.snapshot().companions.some(item => item.automation.heartbeat.legacyFocus)) await store.update(state => {
       for (const companion of state.companions) delete companion.automation.heartbeat.legacyFocus
     })
-    const reflection = new MemoryReflectionService(ctx, memory, concerns)
+    const reflection = new MemoryReflectionService(ctx, memory, concerns, new InteractionReviewService(store))
     const persona = new PersonaService(ctx, memory)
     const skills = new SkillService(store, new SkillRepository(migrated?join(layout.publicRoot,'skills'):join(resolved.defaultCwd, 'partner-system', 'skills')))
     await skills.initialize()

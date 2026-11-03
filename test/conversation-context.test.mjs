@@ -194,3 +194,16 @@ test('relationship adapter switches actual prompt on each QQ sender, missing bin
  assert.equal(f.sections.size,0,'changing sender must not append a system section')
  assert.equal(f.calls.length,0,'adapter uses no model or recall calls')
 })
+
+test('a habit-only profile reaches the conversation without occupation facts or persistent prompt edits',async()=>{
+ const f=fixture(),signal=new AbortController().signal
+ let paragraphs=[{topic:'expression',basis:'explicit',text:'少客套，不要每句追问',evidence:[]}]
+ f.runtime.memory.recallContext=async()=>({profile:{entries:[],preferences:[],persona:{paragraphs},version:'1'},relevant:[],connections:[],scenes:[],history:[]})
+ f.input('今天累了');await f.runtime.prepareConversationContext(f.agent,signal)
+ const text=f.contexts.values().next().value.text
+ assert.match(text,/少客套，不要每句追问/)
+ assert.match(text,/当前角色与关系设定/);assert.match(text,/当前用户要求优先/)
+ paragraphs=[];f.input('今天想多说一点');await f.runtime.prepareConversationContext(f.agent,signal)
+ assert.doesNotMatch(f.contexts.values().next().value.text,/少客套，不要每句追问/)
+ assert.equal(f.sections.size,0)
+})

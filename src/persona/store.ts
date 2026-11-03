@@ -25,14 +25,14 @@ export function personaSources(db: DatabaseSync, companionId: string, scopeId: s
     const evidence = (JSON.parse(String(row.evidence_json)) as Array<{turnId: string; excerpt: string}>).slice(-2)
     if (!evidence.length) continue
     const text = `${String(row.subject)}：${String(row.content)}\n用户依据：${evidence.map(item => item.excerpt).join('；')}`.slice(0, 350)
-    sources.push({id:`memory:${String(row.id)}`,kind:'memory',text,at:Number(row.updated_at),
+    sources.push({id:`memory:${String(row.id)}`,kind:'memory',text,at:Number(row.updated_at),expressionEligible:false,
       signature:personaHash([row.content,row.subject,row.locked,row.evidence_json]),turnIds:evidence.map(item=>item.turnId)})
   }
-  const turns = db.prepare(`SELECT id, at, substr(json_extract(turn_json,'$.user'),1,450) AS user FROM memory_jobs
-    WHERE scope_id=? AND length(trim(json_extract(turn_json,'$.user')))>=10 ORDER BY at DESC, id DESC LIMIT 20`).all(scopeId)
+  const turns = db.prepare(`SELECT id, at, substr(json_extract(turn_json,'$.user'),1,450) AS user, json_extract(turn_json,'$.identityRelation.matched') AS matched FROM memory_jobs
+    WHERE scope_id=? AND length(trim(json_extract(turn_json,'$.user')))>=4 ORDER BY at DESC, id DESC LIMIT 20`).all(scopeId)
   for (const row of turns) {
     const text = String(row.user)
-    sources.push({id:`turn:${String(row.id)}`,kind:'turn',text,at:Number(row.at),signature:personaHash(text),turnIds:[String(row.id)]})
+    sources.push({id:`turn:${String(row.id)}`,kind:'turn',text,at:Number(row.at),expressionEligible:row.matched === null || Number(row.matched)===1,signature:personaHash([text,row.matched === null || Number(row.matched)===1]),turnIds:[String(row.id)]})
   }
   // Preserve still-valid older evidence; a moving recent-message window is not forgetting.
   const saved: PersonaParagraph[] = JSON.parse(String(rowFor(db, scopeId)?.payload ?? '[]'))
@@ -51,16 +51,16 @@ function evidenceCurrent(db: DatabaseSync, companionId: string, scopeId: string,
       .get(source.id.slice('memory:'.length), companionId, scopeId, now)
     return !!row && personaHash([row.content,row.subject,row.locked,row.evidence_json]) === source.signature
   }
-  const row = db.prepare("SELECT substr(json_extract(turn_json,'$.user'),1,450) AS user FROM memory_jobs WHERE id=? AND scope_id=?")
+  const row = db.prepare("SELECT substr(json_extract(turn_json,'$.user'),1,450) AS user, json_extract(turn_json,'$.identityRelation.matched') AS matched FROM memory_jobs WHERE id=? AND scope_id=?")
     .get(source.id.slice('turn:'.length), scopeId)
-  return !!row && personaHash(String(row.user)) === source.signature
+  return !!row && personaHash([String(row.user),row.matched === null || Number(row.matched)===1]) === source.signature
 }
 
 function rowFor(db: DatabaseSync, scopeId: string) {
   return db.prepare('SELECT * FROM persona_state WHERE scope_id=?').get(scopeId)
 }
 // Regenerate once when the synthesis contract changes, even without new conversation.
-const sourceHash = (sources: PersonaSource[]): string => personaHash(['person-centered-v2', sources.map(item=>[item.id,item.signature])])
+const sourceHash = (sources: PersonaSource[]): string => personaHash(['person-centered-v3-expression', sources.map(item=>[item.id,item.signature])])
 
 export function readPersona(db: DatabaseSync, companionId: string, scopeId: string, now=Date.now(), sources=personaSources(db,companionId,scopeId,now)): PersonaView {
   const row = rowFor(db,scopeId)

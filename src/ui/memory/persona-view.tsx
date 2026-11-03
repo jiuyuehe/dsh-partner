@@ -4,7 +4,7 @@ import type {PersonaView as View, PersonaParagraph} from '../../persona/types.js
 import {CollectionEmpty, WorkspaceDialog, WorkspaceNotice, errorMessage} from '../workspace-components.js'
 import {relativeTime} from '../partner-components.js'
 
-const topics = {background: '背景与目标', interests: '持续兴趣', collaboration: '沟通与协作', changes: '近期变化'}
+const topics = {background: '背景与目标', interests: '持续兴趣', collaboration: '沟通与协作', changes: '近期变化', expression: '聊天习惯'}
 const statuses = {waiting: '等待足够依据', pending: '等待后台更新', processing: '正在整理画像', ready: '已更新', retrying: '等待自动重试'}
 
 export function PersonaView({view, base, scopeId, enabled, changed}: {

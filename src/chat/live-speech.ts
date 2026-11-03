@@ -1,4 +1,3 @@
-import { checkShortExpression } from './short-expression.js'
 import { hasTaskPreamble } from '../execution/task-preamble.js'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
@@ -91,13 +90,11 @@ export function installLiveSpeech(agent:Agent,send:(text:string)=>Promise<void>,
           taskSends.set(inputMessageId,{names:new Set([...known,...added]),job:Promise.resolve()})
           return {kind:'partner-chat-v1',parts:[],delivered:true,deliveryKind:'text',intermediate:true,taskPreamble:true,expectedTools:added,inputMessageId,originRouteId,alreadyAnnounced:true,actionsAdded:true}
         }
-        checkShortExpression(agent,agent.session.snapshotEvents(),[text],'speech',short(),inlineDetails===true)
         // Local validation has no delivery side effect; do not cache its rejection as a send.
         validateSpeechText(text,!short()||inlineDetails===true)
         const job=speech.say(text,exec.signal,!short()||inlineDetails===true,true)
         taskSends.set(inputMessageId,{names:new Set(added),job});await job
       }else {
-        checkShortExpression(agent,agent.session.snapshotEvents(),[text],'speech',short(),inlineDetails===true)
         await speech.say(text,exec.signal,inlineDetails===true)
       }
       return {kind:'partner-chat-v1',parts:[],delivered:true,deliveryKind:'text',intermediate:true,...(beforeTools?{taskPreamble:true,expectedTools:[...expectedTools!]}:{}),inputMessageId,spokenText:text.trim(),originRouteId}

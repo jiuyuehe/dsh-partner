@@ -1,3 +1,4 @@
+import type { InteractionReviewService } from './character/interaction-review.js'
 import { renderQqIdentityRelation } from './channels/qq/identity-binding.js'
 import { characterStateReflectionPrompt } from './character/state-policy.js'
 import { normalizeReflectedCharacterState } from './character/domain.js'
@@ -27,7 +28,7 @@ export class MemoryReflectionService {
   private readonly lastPruned = new Map<string, number>()
   private closed = false
   close(): void { this.closed = true; for (const controller of this.controllers) controller.abort(); this.lastPruned.clear() }
-  constructor(private readonly ctx: ReflectionContext, private readonly store: PartnerMemoryStore, private readonly concerns: PartnerConcernStore) {}
+  constructor(private readonly ctx: ReflectionContext, private readonly store: PartnerMemoryStore, private readonly concerns: PartnerConcernStore, private readonly interactionReview?: InteractionReviewService) {}
 
   async reflect(companion: Companion, turn: ConversationTurn): Promise<PartnerConcern[]> {
     if (this.closed) throw new Error('memory service is stopping')
@@ -60,6 +61,7 @@ export class MemoryReflectionService {
         return { scopeId: job.turn.scopeId, created: [] }
       }
       await this.store.consolidate(job.turn, result, job)
+      if (result.interactionReview) await this.interactionReview?.apply(job.turn, result.interactionReview)
       const created = await this.applyConcerns(companion, job.turn, result)
       if (created.length && notify) await notify(job.turn.concernScopeId ?? job.turn.scopeId, created)
       await this.store.settleJob(job)
@@ -121,6 +123,7 @@ export class MemoryReflectionService {
 
   private async extract(companion: Companion, turn: ConversationTurn, repair = false): Promise<ReflectionResult> {
     const existing = await this.store.candidateMemories(companion.id, turn.scopeId, turn.user)
+    const review = !repair ? this.interactionReview?.prepare(turn) : undefined
     const story = turn.characterEnabled && !repair ? await this.store.characterState(companion.id, turn.scopeId) : undefined
     const diaries = await this.store.recentReflectionsForScope(companion.id, turn.scopeId, 1)
     const concerns = await this.concerns.list(companion.id, turn.concernScopeId ?? turn.scopeId, false, 40)
@@ -135,9 +138,9 @@ export class MemoryReflectionService {
       for await (const chunk of this.ctx.llm.stream({
         ...selection,
         messages: [createUserMessage({ content: [{ type: 'text', text: reflectionPromptInput(this.store.day(turn.at), turn, existing, diaries.find(item => item.date === this.store.day(turn.at)), concerns) }], source: { kind: 'plugin:@lemoncat7/dsh-partner', plugin: '@lemoncat7/dsh-partner', form: 'notice', summary: '伙伴记忆提炼' } })],
-        system: REFLECTION_SYSTEM + '\n' + renderQqIdentityRelation(turn.identityRelation) + (story ? characterStateReflectionPrompt(story) : '') + (repair ? '\n本次是历史画像修复：只输出有原话证据的 profile/preference upsert。不要生成任务、事件、挂念或撤销操作；concerns 返回空数组。不能把助手的话当用户事实。' : ''),
+        system: REFLECTION_SYSTEM + '\n' + renderQqIdentityRelation(turn.identityRelation) + (story ? characterStateReflectionPrompt(story) : '') + (review?.prompt ?? '') + (repair ? '\n本次是历史画像修复：只输出有原话证据的 profile/preference upsert。不要生成任务、事件、挂念或撤销操作；concerns 返回空数组。不能把助手的话当用户事实。' : ''),
         temperature: 0.1,
-        maxTokens: 1800,
+        maxTokens: review ? 2600 : 1800,
         signal: controller.signal,
       })) {
         if (chunk.type === 'text-delta') output += chunk.text
@@ -148,6 +151,10 @@ export class MemoryReflectionService {
       throw new Error(`记忆提炼失败：${cause}；耗时${Math.round((Date.now()-startedAt)/1000)}秒，正文${output.length}字`)
     } finally { clearTimeout(timeout); this.controllers.delete(controller) }
     const result = parseReflection(output, true)
+    if (review) {
+      const payload = JSON.parse(output.match(/\{[\s\S]*\}/)![0]) as Record<string, unknown>
+      result.interactionReview = {request:review.request, evaluation:payload.interactionReview ?? null}
+    }
     if (!story) delete result.characterState
     // Shared state must not reassign the bound relationship after a different QQ member speaks.
     if (story && result.characterState && turn.identityRelation && !turn.identityRelation.matched) result.characterState.relationship = story.relationship

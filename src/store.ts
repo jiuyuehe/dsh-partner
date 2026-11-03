@@ -300,6 +300,10 @@ function validateState(value: unknown): asserts value is PartnerState {
   validatePushState(state)
   for (const companion of state.companions!) {
     validateAgreements(companion.temporaryAgreements)
+    if (companion.interactionReview !== undefined) {
+      const review=companion.interactionReview
+      if (!review || typeof review!=='object' || Array.isArray(review) || Object.entries(review).some(([key,r])=>!['affection','persona'].includes(key) || !r || !Number.isFinite(r.at) || !Number.isFinite(r.sourceAt) || typeof r.turnId!=='string' || !['changed','unchanged','limited','stale','failed'].includes(r.outcome) || typeof r.reason!=='string' || r.reason.length>300)) throw Error('invalid interaction review')
+    }
     if (companion.affection) {
       const a=companion.affection
       if (!Number.isFinite(a.score) || a.score < -100 || a.score > 100 || (a.history !== undefined && (!Array.isArray(a.history) || a.history.length > 40 || a.history.some(h=>!h || !Number.isFinite(h.at) || typeof h.turnId !== 'string' || ![-3,-2,-1,1].includes(h.delta) || !Number.isFinite(h.score) || h.score < -100 || h.score > 100 || typeof h.reason !== 'string' || h.reason.length > 300 || typeof h.evidence !== 'string' || h.evidence.length > 300)))) throw Error('invalid affection state')

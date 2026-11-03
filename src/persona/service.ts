@@ -4,7 +4,7 @@ import {createUserMessage} from '@deepseek-ai/dsh-llm'
 import type {Companion} from '../domain.js'
 import type {PartnerMemoryStore} from '../memory-store.js'
 import {memoryFinishError} from '../memory-errors.js'
-import {PERSONA_SYSTEM, parsePersona} from './domain.js'
+import {PERSONA_SYSTEM, EXPRESSION_LEARNING_GUIDANCE, parsePersona} from './domain.js'
 
 type PersonaContext = Context & {llm: Context['llm']; agentDefaultModel: AgentDefaultModelConfig}
 
@@ -35,7 +35,7 @@ export class PersonaService {
       }
       let output = ''
       for await (const chunk of this.ctx.llm.stream({
-        ...selection, system: PERSONA_SYSTEM, temperature: 0.1, maxTokens: 3500, signal: controller.signal,
+        ...selection, system: PERSONA_SYSTEM + '\n' + EXPRESSION_LEARNING_GUIDANCE, temperature: 0.1, maxTokens: 3500, signal: controller.signal,
         messages: [createUserMessage({content: [{type: 'text', text: JSON.stringify({
           sources: job.sources, previous: job.previous.map(({topic,basis,text}) => ({topic,basis,text})),
           corrections: job.corrections,

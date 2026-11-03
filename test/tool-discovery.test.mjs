@@ -262,3 +262,10 @@ test('failed discovered tool exposes exact current evidence accepted by blocked 
  f.agent.session.append('user/message',createUserMessage({source:{kind:'user'},content:[{type:'text',text:'new'}]}),{surfaceOp:'append'})
  assert.throws(()=>validateTaskStop(f.agent.session.snapshotEvents(),receipt.taskEvidence),/不存在/)
 })
+
+test('affection is discoverable with identity and life tools',async t=>{
+ const f=fixture(t)
+ t.after(installToolDiscovery(f.scope.ctx.tools,'c',f.store,[{tool:definition('partner_affection'),allowed:()=>true}]))
+ const result=await f.invoke('partner_tools',{action:'list',category:'identity'})
+ assert.equal(result.isError,false);assert.equal(result.value.tools[0].name,'partner_affection')
+})

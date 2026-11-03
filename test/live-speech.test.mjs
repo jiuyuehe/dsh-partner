@@ -154,7 +154,7 @@ test('unknown names never send; recall then additional image obligations persist
  assert.deepEqual(executed,['partner_memory_recall','generate_image','partner_send_attachment'])
 })
 
-test('short speech feedback does not send or poison task preamble; revised action and final can complete',async t=>{
+test('speech length preference adds no retry while action completion and preamble dedup remain enforced',async t=>{
  const {pendingActions}=await import('../lib/chat/action-obligation.js')
  const root=new Context();root.provide('systemPrompt',{tools:()=>()=>{}});new ToolRuntime(root)
  const agent={session:Session.create('short-feedback'),options:{}},scope=createScope(root,agent);agent.ctx=scope.ctx;t.after(()=>scope.dispose())
@@ -166,14 +166,13 @@ test('short speech feedback does not send or poison task preamble; revised actio
  let seq=0;const call=async(name,args={})=>{const request={name,arguments:args,agent,signal:signal(),callId:'short-'+seq++};agent.session.append('tool/call',{name,arguments:JSON.stringify(args),callId:request.callId});const result=await root.tools.execute(request);agent.session.append('tool/result',JSON.parse(JSON.stringify({message:{id:request.callId,role:'tool',source:{kind:'tool',callId:request.callId},toolCallId:request.callId,content:result.content,isError:result.isError},meta:result.meta})),{surfaceOp:'append'});return result}
  const long='接下来我会根据你说的内容绘制一张图片并查看结果。'
  const denied=await call('partner_chat_say',{text:long,beforeTools:true,expectedTools:['generate_image']})
- assert.equal(denied.isError,true);assert.deepEqual(sent,[]);assert.deepEqual(pendingActions(agent.session.snapshotEvents()),[]);assert.equal(executed,0)
+ assert.equal(denied.isError,false);assert.deepEqual(sent,[long]);assert.deepEqual(pendingActions(agent.session.snapshotEvents()),['generate_image']);assert.equal(executed,0)
  const retry=await call('partner_chat_say',{text:'我来画',beforeTools:true,expectedTools:['generate_image']})
- assert.equal(retry.isError,false);assert.deepEqual(sent,['我来画']);assert.deepEqual(pendingActions(agent.session.snapshotEvents()),['generate_image'])
+ assert.equal(retry.isError,false);assert.deepEqual(sent,[long]);assert.deepEqual(pendingActions(agent.session.snapshotEvents()),['generate_image'])
+ const premature=await call('partner_chat_reply',{messages:[{text:'画好了'}]});assert.equal(premature.isError,true);assert.ok(!premature.concludesTurn)
  await call('generate_image');assert.equal(executed,1)
  const final=await call('partner_chat_reply',{messages:[{text:'图片已经生成了但是还没有发送出去我会等你决定下一步。'}]})
- assert.equal(final.isError,true);assert.ok(!final.concludesTurn)
- const done=await call('partner_chat_reply',{messages:[{text:'画好了，还没发'}]})
- assert.equal(done.isError,false);assert.equal(done.concludesTurn,true);assert.equal(executed,1)
+ assert.equal(final.isError,false);assert.equal(final.concludesTurn,true);assert.equal(executed,1)
 })
 
 test('invalid action preamble can be corrected without caching unsent failure; unknown delivery stays sticky',async t=>{

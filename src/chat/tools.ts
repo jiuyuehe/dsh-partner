@@ -1,4 +1,3 @@
-import { checkShortExpression } from './short-expression.js'
 import { pendingActions, pendingActionNotice, validateTaskStop } from './action-obligation.js'
 import { hasTaskPreamble } from '../execution/task-preamble.js'
 import { hasCurrentSpeech } from './live-speech.js'
@@ -126,7 +125,6 @@ export function chatTools(owner:string, store:PartnerStore, library:StickerLibra
       }
       for (const part of authored.parts) if ('text' in part) assertChatImageDelivery(part.text)
       const textParts = authored.parts.filter(p=>'text'in p)
-      checkShortExpression(agent,events,textParts.flatMap(p=>'text' in p?[p.text]:[]),'final',card.length==='short',(raw as {inlineDetails?:boolean;preserveText?:boolean}).inlineDetails===true||(raw as {preserveText?:boolean}).preserveText===true)
       if (shortWorkDelivered && (textParts.length > 1 || textParts.some(p=>'text'in p && /[\r\n]/.test(p.text)))) throw Error('完整报告已经交付。短句接话的工作结果请用 messages 一条不换行的自然接话，回应完成、未完成或交付这件事，不汇总结论。结果、过程和限制已经在附件里，只有需要对方立即决定或附件失败才补充必要说明。不截断旧文，请重新按人格说一句。用户明确要展开时使用 inlineDetails:true。')
       const input=segmentChatInput(authored.parts,Boolean(card.segmentedReplies))
       if(!card.segmentedReplies && input.filter(p=>'text'in p).length>1)throw new Error('分段回复未开启，请使用一条文字')

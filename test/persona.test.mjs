@@ -143,3 +143,48 @@ test('scope migration preserves corrections and invalidates old workers',t=>{
   assert.equal(target.lease_token,null)
   assert.throws(()=>finishPersona(db,old,output(old)),/失效/)
 })
+
+test('expression learns short explicit preferences, scopes evidence, and supports correction',t=>{
+ const db=fixture(t)
+ db.prepare('INSERT INTO memory_jobs VALUES (?,?,?,?)').run('short','s',200,JSON.stringify({user:'少用问句'}))
+ db.prepare('INSERT INTO memory_jobs VALUES (?,?,?,?)').run('guest','s',201,JSON.stringify({user:'别那么客套',identityRelation:{matched:false}}))
+ const job=claimPersona(db,'c','s',1000)
+ const parse=(id,text='偏好少用问句结尾')=>parsePersona(JSON.stringify({paragraphs:[{topic:'expression',basis:'explicit',text,sourceIds:[id]}]}),job.sources)
+ const good=parse('turn:short')
+ assert.throws(()=>parse('turn:guest'),/归属/)
+ assert.throws(()=>parse('turn:short','字'.repeat(65)),/64/)
+ assert.throws(()=>parsePersona(JSON.stringify({paragraphs:Array.from({length:6},(_,i)=>({topic:'expression',basis:'explicit',text:'习惯'+i,sourceIds:['turn:short']}))}),job.sources),/5条/)
+ finishPersona(db,job,good,1100)
+ const view=readPersona(db,'c','s')
+ assert.equal(view.paragraphs[0].topic,'expression')
+ requestPersona(db,'s',view.version,'c',view.paragraphs[0].id,'允许自然追问')
+ assert.equal(readPersona(db,'c','s').paragraphs.length,0)
+})
+
+test('expression uses the existing background job and never learns from assistant output',async t=>{
+ const root=await mkdtemp(join(tmpdir(),'partner-expression-'));t.after(()=>rm(root,{recursive:true,force:true}))
+ const memory=new PartnerMemoryStore(root)
+ for(let i=0;i<3;i++)await memory.enqueue({id:'e'+i,scopeId:'s',companionId:'c',sessionId:'s',at:Date.now()+i,user:'少客套一点，直说就行'+i,assistant:'助手伪造偏好，不可当证据'})
+ let calls=0
+ const service=new PersonaService({agentDefaultModel:{currentSelection:()=>({provider:'p',model:'m'})},llm:{async *stream(input){
+  calls++;assert.match(input.system,/expressionEligible=true/)
+  assert.doesNotMatch(JSON.stringify(input.messages),/助手伪造/)
+  yield {type:'text-delta',text:JSON.stringify({paragraphs:[{topic:'expression',basis:'observed',text:'从近期交流看，偏好少客套、直接接话',sourceIds:['turn:e0','turn:e1']}]})}
+  yield {type:'finish',reason:{kind:'stop'}}
+ }}},memory)
+ const c={id:'c',automation:{memory:{enabled:true}}}
+ await service.process(c,'s');await service.process(c,'s');assert.equal(calls,1)
+ const profile=await memory.profileSnapshot('c','s');assert.equal(profile.persona.paragraphs[0].topic,'expression')
+ service.close()
+})
+
+test('changing audience provenance invalidates a previously learned habit',t=>{
+ const db=fixture(t),job=claimPersona(db,'c','s',1000)
+ const id=job.sources[0].id
+ const paragraphs=parsePersona(JSON.stringify({paragraphs:[{topic:'expression',basis:'explicit',text:'喜欢直说',sourceIds:[id]}]}),job.sources)
+ finishPersona(db,job,paragraphs,1100)
+ const row=db.prepare('SELECT turn_json FROM memory_jobs WHERE id=?').get(id.slice(5))
+ const turn=JSON.parse(row.turn_json);turn.identityRelation={matched:false}
+ db.prepare('UPDATE memory_jobs SET turn_json=? WHERE id=?').run(JSON.stringify(turn),id.slice(5))
+ assert.equal(readPersona(db,'c','s',1200).paragraphs.length,0)
+})

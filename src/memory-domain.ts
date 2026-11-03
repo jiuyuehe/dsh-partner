@@ -5,6 +5,8 @@ export type MemoryKind = 'profile' | 'preference' | 'task' | 'event' | 'relation
 export type MemoryStatus = 'active' | 'completed' | 'superseded' | 'expired'
 
 export interface ConversationTurn {
+  /** Trusted capture-time audience check, not inferred from dialogue text. */
+  interactionEligible?: boolean
   identityRelation?: import('./channels/qq/identity-binding.js').QqIdentityRelation
   characterEnabled?: boolean
   userMessageIds?: string[]
@@ -91,6 +93,7 @@ export interface MemoryCandidate {
 }
 
 export interface ReflectionResult {
+  interactionReview?: import('./character/interaction-review.js').InteractionReviewResult
   characterState?: import('./character/domain.js').CharacterState
   daily: Pick<DailyReflection, 'summary' | 'events' | 'openTasks' | 'completedTasks' | 'learnings'>
   memories: MemoryCandidate[]

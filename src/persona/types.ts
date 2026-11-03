@@ -1,9 +1,11 @@
-export type PersonaTopic = 'background' | 'interests' | 'collaboration' | 'changes'
+export type PersonaTopic = 'background' | 'interests' | 'collaboration' | 'changes' | 'expression'
 export interface PersonaSource {
   id: string
   kind: 'memory' | 'turn'
   text: string
   at: number
+  /** Only verified owner/default conversation turns can teach shared expression. */
+  expressionEligible?: boolean
   signature: string
   turnIds: string[]
 }

@@ -25,8 +25,11 @@ export function conversationProfile(profile: UserProfileSnapshot, query: string)
   const relevant = (item: UserProfileSnapshot['entries'][number]) =>
     !/助手.*(?:身份|形象|年龄)|角色.*(?:设定|人格|身份|年龄)|人物设定/.test(item.subject)
     && topicMatches(item.subject + ' ' + item.content, query)
-  const {persona: _persona, ...rest} = profile
-  return {...rest, entries: profile.entries.filter(relevant).slice(0, 4), preferences: (profile.preferences ?? []).filter(relevant).slice(0, 4)}
+  const {persona, ...rest} = profile
+  // Stable speaking preferences are useful even when the topic changes;
+  // broad biographical summaries must still stay out of automatic chat recall.
+  const habits = persona?.paragraphs.filter(p => p.topic === 'expression').slice(0, 5)
+  return {...rest, ...(habits?.length ? {persona: {...persona!, paragraphs: habits}} : {}), entries: profile.entries.filter(relevant).slice(0, 4), preferences: (profile.preferences ?? []).filter(relevant).slice(0, 4)}
 }
 
 export function dreamContextRequested(query: string, _autonomous: boolean): boolean {

@@ -13,7 +13,7 @@ export function renderConversationBehavior(card?: CharacterCard): string {
 export function renderExpressionPreferences(card?: CharacterCard): string {
   return [
     '【用户配置的表达选项】具体角色说明和本轮用户要求优先。',
-    card?.length === 'short' ? '篇幅偏好：简短（短句接话）。普通每条以20字以内为目标，先说眼前最想说的一点；确有补充再单独说，一次最终文字以48字以内为目标。不硬塞许多信息，不截掉必要事实；本轮明确要详细或原文时按请求展开。具体措辞由当前角色决定。' : card?.length === 'rich' ? '篇幅偏好：愿意展开聊，随话题和对方意愿。' : '篇幅偏好：随话题自然调整。',
+    card?.length === 'short' ? '篇幅偏好：简短。像平时打字一样先接眼前这一点，通常一两句；有必要再补，不为凑条数延长，也不为字数省掉事实。本轮要求详细或原文时按请求展开，具体语气由角色决定。' : card?.length === 'rich' ? '篇幅偏好：愿意展开聊，随话题和对方意愿。' : '篇幅偏好：随话题自然调整。',
     card?.narration ? '动作描写偏好：允许。' : '动作描写偏好：不主动添加。',
   ].join('\n')
 }
@@ -33,8 +33,7 @@ export function renderConversationTurn(card: CharacterCard | undefined, consecut
 export function renderChatDeliveryGuidance(card?: CharacterCard): string {
   if (!card?.enabled || (!card.segmentedReplies && !card.stickersEnabled)) return ''
   return [
-    card.segmentedReplies && card.length==='short' ? '【当轮接话】提供 partner_chat_say 时，普通短句私聊先用它说眼前这一句，收到送达回执后再决定补话、做事还是结束。不要预先把后续对白全部塞进最终 messages；一句已经够了就用 partner_chat_reply messages:[] 结束，不硬添第二句。任务仍先按任务回应流程执行；明确要完整内容时正常最终交付。' : '',
-    '【聊天投递协议】当前用户聊天提供 partner_chat_say 时，可先发送一句角色对白，收到送达回执后继续自然接话或做事；不强制多条，不输出思考过程，不重复已发送的话，不依赖自主活动续完当轮对白。说完可用 partner_chat_reply messages:[] 结束（须本轮当前输入后已有接话送达）。partner_chat_reply 提交最终回复并结束本轮；必要工具执行完成后调用。直接回应时所有文字放入 messages 的 text 条目，表情图片使用独立 stickerId 条目，不把配文留在工具外。',
+    '【聊天投递】直接回答可用 partner_chat_reply 结束本轮；文字写入 messages 的 text 条目，图片表情写独立 stickerId 条目，不把配文留在工具外。想先说一句再继续时可用 partner_chat_say，确认送达后不重复；已送达且无需补充时可用 partner_chat_reply messages:[] 结束。任务仍按任务回应流程执行。',
     card.segmentedReplies
       ? '分段回复已开启：messages 的每个 text 条目是一条独立消息；换行不等于独立投递。条数由回复内容决定，无最低条数要求。'
       : '分段回复未开启：文字只用一条，表情可独立一条。',

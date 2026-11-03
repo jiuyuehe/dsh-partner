@@ -1,27 +1,26 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {checkShortExpression as check} from '../lib/chat/short-expression.js'
-const events=id=>[{type:'turn/start',seq:1},{type:'user/message',seq:2,data:{id,source:{kind:'user'}}}]
-const long='这是一段需要重新按当前角色简短表达的说明文字。'
-test('short advice is bounded per input and phase, never truncates and permits fallback',()=>{
- const agent={},ev=events('a'),texts=[long]
- assert.throws(()=>check(agent,ev,texts,'speech',true),/尚未发送/)
- assert.deepEqual(texts,[long])
- assert.doesNotThrow(()=>check(agent,ev,texts,'speech',true))
- assert.throws(()=>check(agent,ev,texts,'final',true),/尚未发送/)
- assert.doesNotThrow(()=>check(agent,ev,texts,'final',true))
- assert.throws(()=>check(agent,events('b'),texts,'speech',true))
- assert.throws(()=>check(agent,[{type:'turn/start',seq:9}],texts,'speech',true))
+import {renderConversationTurn, renderChatDeliveryGuidance} from '../lib/character/conversation-behavior.js'
+import {chatTools} from '../lib/chat/tools.js'
+
+test('short expression is a preference; normal direct reply has no mandatory pre-speech round trip',()=>{
+ const card={enabled:true,length:'short',segmentedReplies:true}
+ const text=renderConversationTurn(card,1)
+ assert.match(text,/简短/);assert.doesNotMatch(text,/20字|48字/)
+ assert.match(renderChatDeliveryGuidance(card),/直接回答可用 partner_chat_reply/)
+ assert.doesNotMatch(renderChatDeliveryGuidance(card),/普通短句私聊先用/)
 })
-test('normal length and explicitly expanded replies bypass without consuming advice',()=>{
- for(const [enabled,expanded] of [[false,false],[true,true]]){
-  const agent={};check(agent,events('a'),[long],'final',enabled,expanded)
-  assert.throws(()=>check(agent,events('a'),[long],'final',true))
- }
-})
-test('unicode and total budget count actual codepoints across messages',()=>{
- const agent={};check(agent,[],['😀'.repeat(20)],'final',true)
- assert.throws(()=>check(agent,[],['😀'.repeat(21)],'final',true))
- assert.throws(()=>check({},[],['字'.repeat(17),'字'.repeat(17),'字'.repeat(15)],'final',true))
- assert.doesNotThrow(()=>check({},[],['字'.repeat(16),'字'.repeat(16),'字'.repeat(16)],'final',true))
+test('ordinary short reply over twenty characters preserves facts and finishes without rewrite or model call',async()=>{
+ const card={enabled:true,length:'short',segmentedReplies:true,stickersEnabled:false}
+ const state={companions:[{id:'a',characterCard:card}],sessions:[{sessionId:'s',companionId:'a'}]}
+ const store={snapshot:()=>state,isCompanionRemoving:()=>false}
+ let concluded=0
+ const events=[{type:'turn/start',seq:1,data:{turn:1}},{type:'user/message',seq:2,data:{id:'u',source:{kind:'user'},content:[{type:'text',text:'处理好了没有'}]}}]
+ const exec={signal:new AbortController().signal,concludeTurn:()=>concluded++,agent:{session:{id:'s',snapshotEvents:()=>events}}}
+ const tool=chatTools('a',store,{}, {}, {llm:{stream(){throw Error('No second model call for direct replies')}}},'/unused')[1]
+ const text='文件保存好了，在 /Backup/CaseA.csv；没上传，原文件也没删。'
+ const out=await tool.execute({messages:[{text}]},exec)
+ assert.equal(out.parts[0].text,text);assert.equal(concluded,1)
+ await assert.rejects(tool.execute({messages:[{text:'字'.repeat(181)}]},exec),/180/)
+ assert.equal(concluded,1,'long-content delivery guard still enforced')
 })

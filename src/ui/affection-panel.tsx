@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
 import { api, type CompanionView } from '../client-api.js'
+import type { ReviewReceipt } from '../character/interaction-review.js'
 import { affectionProgress } from '../character/affection.js'
 import type { CharacterCard } from '../character/domain.js'
 import { errorMessage } from './workspace-components.js'
 
 export function AffectionPanel({companion,card,active,disabled,onChange}:{companion:CompanionView;card:CharacterCard;active:boolean;disabled:boolean;onChange(card:CharacterCard):void}):JSX.Element {
-  const [progress,setProgress]=useState(()=>affectionProgress(companion.affection))
+  const [progress,setProgress]=useState<ReturnType<typeof affectionProgress> & {review?:ReviewReceipt | undefined}>(()=>({...affectionProgress(companion.affection),review:companion.interactionReview?.affection}))
   const [error,setError]=useState<string>()
   const [revision,setRevision]=useState(0)
   const [loading,setLoading]=useState(false)
@@ -15,7 +16,7 @@ export function AffectionPanel({companion,card,active,disabled,onChange}:{compan
     const refresh=async()=>{
       if(running||document.hidden)return
       running=true;setLoading(true)
-      try{const value=await api<ReturnType<typeof affectionProgress>>(`/companions/${encodeURIComponent(companion.id)}/character/affection`);if(alive){setProgress(value);setError(undefined)}}
+      try{const value=await api<ReturnType<typeof affectionProgress> & {review?:ReviewReceipt | undefined}>(`/companions/${encodeURIComponent(companion.id)}/character/affection`);if(alive){setProgress(value);setError(undefined)}}
       catch(e){if(alive)setError(errorMessage(e))}finally{running=false;if(alive)setLoading(false)}
     }
     void refresh();const timer=setInterval(()=>void refresh(),30000)
@@ -28,7 +29,8 @@ export function AffectionPanel({companion,card,active,disabled,onChange}:{compan
     <div className="dsh-partner-affection-scale" aria-hidden="true"><span>−100</span><span>0</span><span>+100</span></div>
     <small className="dsh-partner-affection-caption">{!card.enabled||!enabled?'已暂停，进度保留':`随真实互动涨跌 · 主动概率 ×${progress.multiplier.toFixed(2)}`}</small>
     <p className="dsh-partner-affection-caption">普通聊天不自动加分。每次增加 1，至少间隔 4 小时；每次减少 1–3。滚动 24 小时最多增加 2、减少 6，每条消息只记一次。不会因离线自动扣分。旧版分数保留。</p>
-    <details><summary>最近变化与原因</summary>{!progress.history.length?<p className="dsh-partner-affection-caption">新规则尚无变化记录。模型没有判断到明显变化时，好感度保持不变。</p>:<ol className="dsh-partner-affection-history">{[...progress.history].reverse().map(item=><li key={item.turnId}><span>{item.delta>0?'+':''}{item.delta} → {item.score} · {new Date(item.at).toLocaleString()}</span><p>{item.reason}</p><details><summary>互动依据</summary><p>{item.evidence}</p></details></li>)}</ol>}</details>
+    <small className="dsh-partner-affection-caption">{!companion.automation.memory.enabled?'自动检查随记忆学习暂停；聊天中仍可主动记录变化':progress.review?`最近检查 ${new Date(progress.review.at).toLocaleString()} · ${{changed:'已变化',unchanged:'保持不变',limited:'达到变化限制',stale:'等待重新检查',failed:'检查失败'}[progress.review.outcome]}：${progress.review.reason}`:'等待下一次真实互动后的后台检查'}</small>
+    <details><summary>最近变化与原因</summary>{!progress.history.length?<p className="dsh-partner-affection-caption">新规则尚无变化记录。检查结果可在上方查看；没有充分依据时保持不变。</p>:<ol className="dsh-partner-affection-history">{[...progress.history].reverse().map(item=><li key={item.turnId}><span>{item.delta>0?'+':''}{item.delta} → {item.score} · {new Date(item.at).toLocaleString()}</span><p>{item.reason}</p><details><summary>互动依据</summary><p>{item.evidence}</p></details></li>)}</ol>}</details>
     {error&&<div className="dsh-partner-affection-error"><small role="alert">进度读取失败</small><button type="button" disabled={loading} onClick={()=>setRevision(n=>n+1)}>重试</button></div>}
   </div>
 }
