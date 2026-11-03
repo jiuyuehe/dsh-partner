@@ -13,6 +13,7 @@ export type { CompanionCapability } from './capabilities.js'
 export type PairingStatus = 'pending' | 'approved' | 'blocked'
 
 export interface Companion {
+  activityJournal?: import('./character/activity-journal.js').ActivityJournalEntry[]
   temporaryAgreements?: import('./chat/agreements.js').TemporaryAgreement[]
   affection?: import('./character/affection.js').AffectionState
   toolDiscovery?: boolean

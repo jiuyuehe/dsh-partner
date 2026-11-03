@@ -18,6 +18,7 @@ await build({
 
 await build({
   entryPoints: ['src/client.tsx'],
+  minifySyntax: true,
   outfile: 'lib/client.js',
   bundle: true,
   format: 'cjs',

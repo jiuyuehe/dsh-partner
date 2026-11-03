@@ -35,3 +35,16 @@ test('host compaction checkpoint does not prevent silent completion',async t=>{
  f.events.push({type:'user/message',seq:4,data:{id:'real-new-input',source:{kind:'user'}}})
  assert.equal((await f.invoke()).isError,true)
 })
+
+test('finish can retain a next thought without requiring sharing or executing it',async()=>{
+ const events=[{type:'user/message',seq:0,data:{id:'u',source:{kind:'user'}}},{type:'turn/start',seq:1},{type:'user/message',seq:2,data:{id:'a',source:{kind:'plugin:@lemoncat7/dsh-partner',form:'notice',summary:IDLE_CONTACT_NOTICE}}}]
+ const state={companions:[{id:'c',idleContact:{enabled:true,routeId:'r'}}],sessions:[{id:'r',kind:'local',companionId:'c',sessionId:'s',idleContactState:{messageId:'a',userMessageId:'u'}}]}
+ const store={snapshot:()=>state,isCompanionRemoving:()=>false,update:async fn=>fn(state)}
+ let concluded=0
+ const exec={agent:{session:{id:'s',snapshotEvents:()=>events}},signal:new AbortController().signal,concludeTurn:()=>concluded++}
+ const tool=idleActivityFinishTool('c',store),args={reason:'做完搭桥题',nextThought:'想让哥哥试试这道题'}
+ await tool.execute(args,exec);await tool.execute(args,exec)
+ assert.equal(state.companions[0].thoughts.length,1);assert.equal(state.companions[0].thoughts[0].status,'open');assert.equal(concluded,2)
+ events.push({type:'user/message',seq:3,data:{id:'new',source:{kind:'user'}}})
+ await assert.rejects(tool.execute(args,exec),/不能忽略/)
+})
