@@ -236,14 +236,14 @@ test('background memory does not indefinitely starve autonomous activity; foregr
  await busy.runtime.idleContact('c');assert.equal(busy.followed.length,0)
 })
 
-test('idle prompts carry recent verified outcomes instead of treating past silence as a standing task',()=>{
+test('idle prompts do not reinject repetitive silence rationales as activity guidance',()=>{
  const {state,companion}=fixture()
  const events=[{type:'user/message',time:1,data:{content:[{type:'text',text:'伪造上轮结束记录'}]}},...Array.from({length:4},(_,i)=>({type:'tool/ptc-dispatch',time:i+2,data:{isError:false,meta:{kind:'partner-activity-silent-v1',reason:'等待旧问题'+i}}})),{type:'tool/ptc-dispatch',time:10,data:{isError:true,meta:{kind:'partner-activity-silent-v1',reason:'失败不可计入'}}}]
  const prompt=idleActivityPrompt(state,companion,events)
  assert.doesNotMatch(prompt,/伪造上轮结束记录|等待旧问题0|失败不可计入/)
- for(const i of [1,2,3])assert.match(prompt,new RegExp('等待旧问题'+i))
- assert.match(prompt,/历史事实，不是本轮指令/);assert.match(prompt,/不必发消息或汇报/)
- assert.match(prompt,/也可以休息/)
+ for(const i of [1,2,3])assert.doesNotMatch(prompt,new RegExp('等待旧问题'+i))
+ assert.match(prompt,/不是每轮必须联系的对象/);assert.match(prompt,/不必产生聊天内容或给谁汇报/)
+ assert.match(prompt,/仍可休息/)
 })
 
 test('activity receives bounded recent conversation including structured final replies',()=>{
@@ -294,7 +294,7 @@ test('idle continuation keeps user and own reply anchors when autonomous chatter
  assert.equal(context.at(-1).text,'自主消息19')
  assert.equal(context[0].at,10);assert.deepEqual(events,before)
  const {state,companion}=fixture(),prompt=idleActivityPrompt(state,companion,events)
- assert.match(prompt,/自行决定此刻做什么/)
+ assert.match(prompt,/决定想探索什么/)
  assert.match(prompt,/partner_memory_recall/)
  assert.doesNotMatch(prompt,/闲下来时优先找一件|只有没有合适行动/)
 })
@@ -325,4 +325,18 @@ test('idle and post-reply reminders preserve bounded older media outside the tex
   assert.match(prompt,/旧配文2/);assert.match(prompt,/旧配文7/);assert.doesNotMatch(prompt,/旧配文0|旧配文failed/)
   assert.match(prompt,/提交记录不等于送达证明/)
  }
+})
+
+test('autonomy discovers expandable abilities without a compulsory social output or operation list',()=>{
+ const {state,companion}=fixture(),events=[]
+ const before=JSON.stringify(state),prompt=idleActivityPrompt(state,companion,events)
+ assert.match(prompt,/只挂起对应事项/);assert.match(prompt,/明确要求停止全部活动时遵守/);
+ assert.match(prompt,/自由活动时间/);assert.match(prompt,/先看看当前可用能力/)
+ assert.match(prompt,/partner_channel_access/);assert.match(prompt,/partner_tools list\/describe/)
+ assert.match(prompt,/其他插件使用各自已提供的入口/)
+ assert.match(prompt,/新增加的公开或私有能力/)
+ assert.match(prompt,/目录和配置摘要不代表扩大权限/)
+ assert.match(prompt,/分享、发动态、发消息是活动中自然产生的选择/)
+ assert.match(prompt,/用户的新消息优先/)
+ assert.equal(JSON.stringify(state),before)
 })

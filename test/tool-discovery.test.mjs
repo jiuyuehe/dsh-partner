@@ -269,3 +269,20 @@ test('affection is discoverable with identity and life tools',async t=>{
  const result=await f.invoke('partner_tools',{action:'list',category:'identity'})
  assert.equal(result.isError,false);assert.equal(result.value.tools[0].name,'partner_affection')
 })
+
+test('autonomous discovery reflects live abilities and revocation without a fixed activity menu',async t=>{
+ const f=fixture(t);let enabled=true
+ const original=definition('partner_qq')
+ t.after(installToolDiscovery(f.scope.ctx.tools,'c',f.store,[{tool:original,allowed:()=>enabled}]))
+ const {IDLE_CONTACT_NOTICE}=await import('../lib/character/idle-contact.js')
+ f.agent.session.append('user/message',createUserMessage({source:{kind:'plugin:@lemoncat7/dsh-partner',plugin:'@lemoncat7/dsh-partner',form:'notice',summary:IDLE_CONTACT_NOTICE},content:[{type:'text',text:'自主活动'}]}),{surfaceOp:'append'})
+ const access=await f.invoke('partner_channel_access',{})
+ assert.equal(access.isError,false);assert.match(access.value.next,/按自己的兴趣/);assert.equal(access.value.total,1)
+ const visible=await f.invoke('partner_tools',{action:'list',query:'partner_qq'})
+ assert.equal(visible.value.tools[0].name,'partner_qq')
+ enabled=false
+ const revoked=await f.invoke('partner_channel_access',{});assert.equal(revoked.value.total,0)
+ const denied=await f.call('partner_qq');assert.equal(denied.isError,true)
+ f.agent.session.append('user/message',createUserMessage({source:{kind:'user'},content:[{type:'text',text:'帮我看看'}]}),{surfaceOp:'append'})
+ assert.doesNotMatch((await f.invoke('partner_channel_access',{})).value.next,/按自己的兴趣/)
+})

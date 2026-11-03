@@ -1,3 +1,4 @@
+import { isIdleContactNotice } from '../character/idle-contact.js'
 import { AGREEMENT_GUIDANCE } from '../chat/agreements.js'
 import type {ToolDefinition,ToolRuntime,ToolRunContext,ToolExecutionResult} from '@deepseek-ai/dsh-tools'
 import {ToolCallId} from '@deepseek-ai/dsh-llm'
@@ -106,6 +107,8 @@ export function installToolDiscovery(runtime:ToolRuntime,owner:string,store:Part
     const query=(args.query??'').trim().toLocaleLowerCase(),offset=args.offset??0
     if(args.category&&!GROUPS.some(g=>g.id===args.category))throw Error('分类不存在')
     if(!Number.isSafeInteger(offset)||offset<0||query.length>80)throw Error('查询参数无效')
+    const currentInput=[...exec.agent!.session.snapshotEvents()].reverse().find(e=>e.type==='user/message'&&(e.data.source.kind==='user'||isIdleContactNotice(e)))
+    const autonomous=!!currentInput&&isIdleContactNotice(currentInput)
     const filtered=args.category||query||args.offset!==undefined
     const found=all.filter(t=>(!args.category||category(t.name)===args.category)&&(!query||toolSearchMatches(t,query)))
     return {scope:access.allowedTools?'chat-only':'authorized',
@@ -113,7 +116,7 @@ export function installToolDiscovery(runtime:ToolRuntime,owner:string,store:Part
      categories:GROUPS.map(g=>({id:g.id,title:g.title,count:all.filter(t=>category(t.name)===g.id).length})).filter(g=>g.count),
      total:filtered?found.length:all.length,
      ...(filtered?{tools:found.slice(offset,offset+12).map(visible),nextOffset:offset+12<found.length?offset+12:null}:{}),
-     next:all.some(t=>t.name==='partner_work_execute')?'核实实现方案或排查问题直接调用 partner_work_execute；只需工具目录时按 category/query/offset 分页查询。':'按 category/query/offset 分页查询能力；具体参数用 partner_tools describe。',
+     next:autonomous?'这些分类来自当前实时授权的伙伴工具。按自己的兴趣选择 category/query 看具体能力，再 describe 核实参数；可探索、尝试或继续自己的事情，不必为了联系归属账号找话题。其他插件通过其自身入口发现，新能力仍按实时权限使用。':all.some(t=>t.name==='partner_work_execute')?'核实实现方案或排查问题直接调用 partner_work_execute；只需工具目录时按 category/query/offset 分页查询。':'按 category/query/offset 分页查询能力；具体参数用 partner_tools describe。',
      ...(access.denialReason?{notice:access.denialReason}:{})}
    }
   }))
