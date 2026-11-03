@@ -134,9 +134,9 @@ test('completed silent activity with actual work gets one persisted decayed draw
  await chain(f);assert.deepEqual(f.route.postReplyOpportunity,saved)
  ready(f);await f.runtime.idleContact('c');assert.equal(f.followed.length,2);assert.equal(f.route.idleContactState.depth,1)
 })
-test('rest-only activity stops; completed chain is capped and misses never reroll',async()=>{
+test('rest-only activity stops; continued chains decay and misses never reroll',async()=>{
  const f=fixture();await completed(f,false);await chain(f);assert.equal(f.route.postReplyOpportunity.status,'claimed');assert.equal(f.route.idleContactState.continuationChecked,true)
- const g=fixture();await completed(g);g.route.idleContactState.depth=4;await chain(g);assert.equal(g.route.postReplyOpportunity.probability,0);assert.equal(g.route.postReplyOpportunity.status,'missed')
+ const g=fixture();await completed(g);g.route.idleContactState.depth=4;await chain(g);assert.equal(g.route.postReplyOpportunity.probability,.8*0.5**5);assert.equal(g.route.postReplyOpportunity.status,'pending')
  const h=fixture();await completed(h);const random=Math.random;Math.random=()=>.99;try{await h.runtime.continueCompletedActivity('c')}finally{Math.random=random}
  assert.equal(h.route.postReplyOpportunity.status,'missed');await chain(h);assert.equal(h.route.postReplyOpportunity.status,'missed')
 })

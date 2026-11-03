@@ -419,7 +419,13 @@ export class ChannelManager {
             const claim=route.idleContactState!,state=this.store.snapshot(),channel=state.channels.find(c=>c.id===route.channelId)!
             reply.idleContactOrigin={routeId:route.id,sessionId:session.id,messageId:notice.data.id,userMessageId:claim.userMessageId,policyRevision:claim.policyRevision!}
             if(channel.direct)reply.directSource={routeId:route.id,sessionId:route.sessionId,accountId:channel.accountId,baseUrl:channel.direct.baseUrl,targetId:directReplyTarget(state,route.channelId,route.userId)}
-            await this.queueProactive(route,`idle:${notice.data.id}`,reply,valid,true)
+            try {
+              await this.queueProactive(route,`idle:${notice.data.id}`,reply,valid,true)
+              await this.recordThoughtDelivery(route.companionId,claim.thoughtId,notice.data.id,'delivered','已发送到所选会话')
+            } catch(error) {
+              await this.recordThoughtDelivery(route.companionId,claim.thoughtId,notice.data.id,'failed','渠道未确认送达，不自动重复发送')
+              throw error
+            }
           }
         }
         return
@@ -452,6 +458,15 @@ export class ChannelManager {
     await this.queueProactive(route, receipt, await prepareChannelReply(parts, route.cwd ?? partnerCwd(this.defaultCwd, route.companionId)))
   }
 
+  private async recordThoughtDelivery(owner:string,id:string|undefined,activityId:string,outcome:'delivered'|'failed',result:string):Promise<void> {
+    if(!id)return
+    await this.store.update(state=>{
+      const thought=state.companions.find(c=>c.id===owner)?.thoughts?.find(t=>t.id===id)
+      if(!thought)return
+      if(thought.lastActivityId!==activityId){thought.attempts++;thought.lastActivityId=activityId;thought.lastConsideredAt=Date.now()}
+      thought.lastOutcome=outcome;thought.result=result;thought.updatedAt=Date.now()
+    })
+  }
   private async queueProactive(route: ChannelSession, receipt: string, reply: PartnerReply, stillValid?: () => boolean, exactOrigin = false): Promise<void> {
     if (this.store.snapshot().recentReceipts.includes(receipt)) return
     const key = `${route.channelId}:${route.userId}`

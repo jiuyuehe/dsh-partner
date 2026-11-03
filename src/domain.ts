@@ -18,6 +18,7 @@ export interface Companion {
   toolDiscovery?: boolean
   sleepPolicy?: import('./character/sleep.js').SleepPolicy
   sleepState?: import('./character/sleep.js').SleepState
+  thoughts?: import('./character/thoughts.js').CompanionThought[]
   interactionReview?: import('./character/interaction-review.js').InteractionReviewState
   personaHistory?: import('./companions/persona-refinement.js').PersonaRevision[]
   identityDraft?: import('./companions/identity.js').CompanionIdentity

@@ -8,6 +8,7 @@ export interface AutomationView {
   heartbeat: { enabled: boolean; intervalMinutes: number; quietStartHour: number; quietEndHour: number; dailyLimit: number }
 }
 export interface CompanionView {
+  thoughts?: import('./character/thoughts.js').CompanionThought[]
   interactionReview?: import('./character/interaction-review.js').InteractionReviewState
   personaHistory?: import('./companions/persona-refinement.js').PersonaRevision[]
   affection?: import('./character/affection.js').AffectionState

@@ -1,3 +1,4 @@
+import { selectThought, thoughtTargetAllowed, renderThoughts } from './character/thoughts.js'
 import { renderPersonaParagraphs } from './persona/context.js'
 import { projectAgreements } from './chat/agreements.js'
 import { installLiveSpeech } from './chat/live-speech.js'
@@ -352,7 +353,8 @@ export class PartnerAgentRuntime {
     const state = this.store.snapshot(), companion = state.companions.find(c => c.id === companionId)
     const activity = this.companionActivity(companionId)
     const pendingRoute = state.sessions.filter(r => r.companionId === companionId && r.postReplyOpportunity?.status === 'pending' && !this.queues.has(r.sessionId) && !this.steeringQueues.has(r.sessionId) && !activity.some(a=>a.sessionId===r.sessionId)).sort((a,b)=>a.postReplyOpportunity!.dueAt-b.postReplyOpportunity!.dueAt)[0]
-    let route = pendingRoute ?? state.sessions.find(r => r.id === companion?.idleContact?.routeId && r.companionId === companionId)
+    const thought = !pendingRoute && companion ? selectThought(state,companion,Math.random,r=>!this.isArchived(r)) : undefined
+    let route = pendingRoute ?? (thought ? state.sessions.find(r=>r.id===thought.targetRouteId) : undefined) ?? state.sessions.find(r => r.id === companion?.idleContact?.routeId && r.companionId === companionId)
     const continuation = !!pendingRoute
     if (pendingRoute && companion) {
       const pending = pendingRoute.postReplyOpportunity!
@@ -369,22 +371,24 @@ export class PartnerAgentRuntime {
     if(user&&completed)user.at=Math.max(user.at,completed.time)
     if (continuation) {
       if (user?.id !== route.postReplyOpportunity?.userMessageId) { await this.cancelPostReply(companionId, undefined, route?.sessionId); return }
-    } else if (!idleContactDue(this.store.snapshot(), companion, user, Date.now(), timeZone)) return
+    } else if (!idleContactDue(this.store.snapshot(), companion, user, Date.now(), timeZone, route.id)) return
     const stableSeq = agent.session.seq
+    const thoughtContext = renderThoughts(this.store.snapshot(),companion,route)
     const message = createUserMessage({ content: [{type:'text',text:
-      (continuation ? postReplyActivityPrompt : idleActivityPrompt)(this.store.snapshot(),companion,agent.session.snapshotEvents())
+      (continuation ? postReplyActivityPrompt : idleActivityPrompt)(this.store.snapshot(),companion,agent.session.snapshotEvents()) + (thoughtContext ? '\n'+thoughtContext : '')
     }], source:{kind:'plugin:@lemoncat7/dsh-partner',plugin:'@lemoncat7/dsh-partner',form:'notice',summary:IDLE_CONTACT_NOTICE} })
     let claimed = false
     await this.store.update(draft => {
       const current=draft.companions.find(c=>c.id===companionId), target=draft.sessions.find(r=>r.id===route.id)
       const now=Date.now()
-      if(!current || current.updatedAt!==companion.updatedAt || !target || target.sessionId!==route.sessionId || (continuation ? !postReplyCurrent(draft,current,target,now) || target.postReplyOpportunity?.status!=='pending' || target.postReplyOpportunity.userMessageId!==user?.id || now>target.postReplyOpportunity.expiresAt : !idleContactDue(draft,current,user,now,timeZone)))return
+      if(!current || current.updatedAt!==companion.updatedAt || !target || target.sessionId!==route.sessionId || (continuation ? !postReplyCurrent(draft,current,target,now) || target.postReplyOpportunity?.status!=='pending' || target.postReplyOpportunity.userMessageId!==user?.id || now>target.postReplyOpportunity.expiresAt : !idleContactDue(draft,current,user,now,timeZone,route.id)))return
+      if(thought){const live=current.thoughts?.find(t=>t.id===thought.id);if(!live||live.status!=='open'||live.targetRouteId!==target.id||!thoughtTargetAllowed(draft,current,live.sourceRouteIds,target))return}
       const probability=continuation ? target.postReplyOpportunity!.probability : idleActivityProbability(draft,current,user,now)
       target.idleActivityCheck={at:now,probability}
       if(!continuation && Math.random()>=probability)return
       if(continuation)target.postReplyOpportunity!.status='claimed'
       const day=idleContactDay(now,timeZone)
-      target.idleContactState={...(continuation?{kind:'post-reply' as const,depth:target.postReplyOpportunity?.depth??0}:{depth:0}),userMessageId:user!.id,messageId:message.id,attemptedAt:now,day,count:(target.idleContactState?.day===day?target.idleContactState.count:0)+1,timeZone,policyRevision:current.updatedAt}
+      target.idleContactState={...(continuation?{kind:'post-reply' as const,depth:target.postReplyOpportunity?.depth??0}:{depth:0,...(thought?{kind:'thought' as const,thoughtId:thought.id}:{})}),userMessageId:user!.id,messageId:message.id,attemptedAt:now,day,count:(target.idleContactState?.day===day?target.idleContactState.count:0)+1,timeZone,policyRevision:current.updatedAt}
       claimed=true
     })
     // Claim before generation survives restart. Don't replay uncertain sends or steal active turns.
@@ -793,6 +797,15 @@ export class PartnerAgentRuntime {
     const companion = this.store.snapshot().companions.find(item => item.id === route.companionId)
     if (companion === undefined) return
     const events = completedTurnEvents(session.snapshotEvents(), event)
+    const activityNotice=events.find(isIdleContactNotice)
+    if(activityNotice?.type==='user/message')await this.store.update(state=>{
+      const source=state.sessions.find(r=>r.companionId===companion.id&&r.idleContactState?.messageId===activityNotice.data.id)
+      const thought=state.companions.find(c=>c.id===companion.id)?.thoughts?.find(t=>t.id===source?.idleContactState?.thoughtId)
+      if(!thought||thought.lastActivityId===activityNotice.data.id)return
+      thought.attempts++;thought.lastConsideredAt=event.time;thought.lastActivityId=activityNotice.data.id;thought.updatedAt=event.time
+      thought.lastOutcome=events.some(isActivitySilenceRequested)?'silent':'considered'
+      thought.result=thought.lastOutcome==='silent'?'本轮选择安静结束':'已考虑此念头；发送结果以渠道回执为准'
+    })
     const identityRelation = currentQqIdentityRelation(session.id, events, this.store.snapshot().sessions, this.store.snapshot().channels ?? [])
     const prompt = events.find(item => item.type === 'user/message' && item.data.source.kind === 'user')
     const replies = events.filter(item => item.type === 'assistant/message' && !item.data.interrupted)
@@ -804,6 +817,7 @@ export class PartnerAgentRuntime {
     const concernDirective = identityRelation && !identityRelation.matched ? undefined : await this.concerns?.applyUserDirective(companion.id, scopeId, userText, event.time)
     const created = companion.automation.memory.enabled && automaticMemoryAllowed(session.id, events, this.store.snapshot().sessions) && this.reflection !== undefined ? await this.reflection.reflect(companion, {
       id: `turn-${createHash('sha256').update(JSON.stringify([session.id, event.time, userText])).digest('hex').slice(0, 32)}`, companionId: companion.id, scopeId: conversationMemoryScope(route, this.store.snapshot().sessions),
+      sourceRouteIds: [...new Set(events.flatMap(e => { if(e.type!=='user/message'||e.data.source.kind!=='user')return []; const routes=this.store.snapshot().sessions.filter(r=>r.companionId===companion.id&&r.sessionId===session.id); const origin=routes.find(r=>r.kind==='channel'&&r.inboundMessageIds?.includes(e.data.id))??routes.find(r=>r.kind==='local'); return origin?[origin.id]:[] }))],
       interactionEligible: affectionTurnEligible(this.store.snapshot(), companion.id, session.id, events),
       characterEnabled: companion.characterCard?.enabled === true,
       ...(identityRelation ? {identityRelation} : {}),

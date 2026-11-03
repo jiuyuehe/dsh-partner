@@ -1,3 +1,4 @@
+import { thoughtTool } from '../character/thought-tool.js'
 import { affectionTool } from '../character/affection-tool.js'
 import {workflowProtocol} from './workflow-protocols.js'
 import {workExecutionTool} from '../execution/work-tool.js'
@@ -82,6 +83,7 @@ export class PartnerAgentComposition {
       if (this.sleepToolFactory) add(this.sleepToolFactory(companion.id))
       add(identityTool(companion.id, this.store))
       add(affectionTool(companion.id, this.store))
+      add(thoughtTool(companion.id, this.store))
       add(idleActivityFinishTool(companion.id, this.store))
       for (const tool of this.mcp?.definitions(companion.id) ?? []) register(tool, 'mcp')
       if (this.attachmentToolFactory) add(this.attachmentToolFactory(companion.id))

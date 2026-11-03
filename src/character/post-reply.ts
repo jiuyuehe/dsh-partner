@@ -1,3 +1,4 @@
+import { thoughtTargetAllowed } from './thoughts.js'
 import type {SessionEvent} from '@deepseek-ai/dsh-session'
 import type { ChannelSession, Companion, PartnerState } from '../domain.js'
 import { affectionEnabled, affectionProgress } from './affection.js'
@@ -17,9 +18,7 @@ export interface PostReplyOpportunity {
   depth?: number
   status: 'pending' | 'missed' | 'claimed' | 'cancelled'
 }
-export const MAX_ACTIVITY_CHAIN = 5
 export function postReplyProbability(companion: Companion, depth = 0): number {
-  if(depth >= MAX_ACTIVITY_CHAIN)return 0
   const base = affectionEnabled(companion) ? 0.45 + 0.35 * affectionProgress(companion.affection).score / 100 : 0.45
   return base * 0.5 ** Math.max(0,depth)
 }
@@ -59,6 +58,10 @@ export function postReplyCurrent(state: PartnerState, companion: Companion, rout
 /** Shared by generation, delivery and tool dispatch; revocation takes effect immediately. */
 export function activityPolicyCurrent(state: PartnerState, companion: Companion, route: ChannelSession, now = Date.now(), allowSleeping = false): boolean {
   if (!companion.idleContact?.enabled) return false
+  if(route.idleContactState?.kind==='thought'){
+    const thought=companion.thoughts?.find(t=>t.id===route.idleContactState?.thoughtId)
+    return !!thought&&thought.status==='open'&&thought.targetRouteId===route.id&&thoughtTargetAllowed(state,companion,thought.sourceRouteIds,route)
+  }
   return route.idleContactState?.kind === 'post-reply'
     ? postReplyCurrent(state, companion, route, now, allowSleeping) && route.postReplyOpportunity?.status === 'claimed'
       && route.postReplyOpportunity.userMessageId === route.idleContactState.userMessageId

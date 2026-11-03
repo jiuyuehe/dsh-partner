@@ -5,7 +5,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ToolRuntime } from '@deepseek-ai/dsh-tools'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 
-const conversational = new Set(['partner_tools','partner_channel_access','partner_agreement','partner_chat_say','partner_chat_progress','partner_chat_reply','partner_stickers','partner_qq_reply','partner_activity_finish','partner_identity','partner_affection','partner_sleep'])
+const conversational = new Set(['partner_tools','partner_channel_access','partner_agreement','partner_chat_say','partner_chat_progress','partner_chat_reply','partner_stickers','partner_qq_reply','partner_activity_finish','partner_identity','partner_affection','partner_thoughts','partner_sleep'])
 export function needsTaskPreamble(name:string,args:unknown):boolean {
   if(conversational.has(name))return false
   const input = args && typeof args === 'object' ? args as {action?:unknown;operation?:unknown} : undefined

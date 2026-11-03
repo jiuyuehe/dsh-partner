@@ -31,7 +31,7 @@ export function qqChatOnly(agent: Pick<Agent, 'session'>, state: Pick<PartnerSta
     if (isInternalTaskNotice(event)) return false
     if (isIdleContactNotice(event)) return !routes.some(r => {
       if (r.idleContactState?.messageId !== event.data.id) return false
-      if (r.idleContactState.kind !== 'post-reply') return true
+      if (r.idleContactState.kind !== 'post-reply' && r.idleContactState.kind !== 'thought') return true
       const companion = state.companions?.find(c=>c.id===r.companionId)
       return !!companion && activityPolicyCurrent(state as PartnerState,companion,r)
     })
