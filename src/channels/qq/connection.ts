@@ -4,6 +4,15 @@ export class OneBotError extends Error {
   constructor(message: string, readonly retryable = true) { super(message) }
 }
 
+/** A completed API error response, distinct from an unknown transport outcome. */
+export class OneBotApiError extends OneBotError {
+  constructor(readonly retcode: unknown, wording: unknown) {
+    // Preserve protocol diagnostics, never echo arbitrary server text/URLs/secrets into prompts.
+    const oidb = typeof wording === 'string' ? wording.match(/OIDB error (\d+) on (0x[0-9a-f]+_\d+)/i) : null
+    super(`QQ 接口明确返回失败（retcode ${Number.isFinite(retcode)?retcode:'未知'}）${oidb?`; OIDB ${oidb[1]} / ${oidb[2]}`:''}${typeof wording==='string'&&wording.includes('Process_Nudge failed')?'; Process_Nudge failed':''}`,false)
+  }
+}
+
 /** One universal forward WS carries events and echo-correlated API responses.
  * Mutating API requests are never replayed after disconnect or timeout. */
 export class OneBotConnection {
@@ -74,7 +83,7 @@ export class OneBotConnection {
             if (!pending) return
             this.pending.delete(data.echo)
             if (data.status === 'ok' && data.retcode === 0) pending.resolve(data.data)
-            else pending.reject(new OneBotError(`QQ 接口执行失败（retcode ${Number.isFinite(data.retcode) ? data.retcode : '未知'}）`, false))
+            else pending.reject(new OneBotApiError(data.retcode, data.wording ?? data.message))
           } else if ((data.post_type === 'message' && ['private','group'].includes(data.message_type)) || (data.post_type === 'notice' && data.notice_type === 'notify' && data.sub_type === 'poke')) {
             if (this.events.length >= 500) {
               this.fault = new OneBotError('QQ 消息积压超过 500 条，请检查处理状态后重新启用渠道', false)

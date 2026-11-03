@@ -1,3 +1,4 @@
+import {OneBotApiError} from './connection.js'
 import {channelReplyAllowed} from '../reply-access.js'
 import { createHash } from 'node:crypto'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
@@ -81,8 +82,8 @@ export function qqReplyTool(owner: string, store: PartnerStore, call: QqActionCa
           await store.update(state=>{const r=state.channels.find(c=>c.id===channel.id)?.qqActivity?.find(r=>r.id===receiptId);if(r)r.status='confirmed'})
           return result('confirmed')
         }catch(error){
-          await store.update(state=>{const r=state.channels.find(c=>c.id===channel.id)?.qqActivity?.find(r=>r.id===receiptId);if(r)r.status='unknown'})
-          throw Error('QQ 互动未确认发送，不要自动重发：'+(error instanceof Error?error.message:'请求失败'))
+          await store.update(state=>{const r=state.channels.find(c=>c.id===channel.id)?.qqActivity?.find(r=>r.id===receiptId);if(r){r.status=error instanceof OneBotApiError?'failed':'unknown';if(error instanceof OneBotApiError)r.error=error.message}})
+          throw Error((error instanceof OneBotApiError?'QQ 互动接口已返回失败，不要自动重发：':'QQ 互动未确认发送，不要自动重发：')+(error instanceof Error?error.message:'请求失败'))
         }
       }
       if(args.userId!==undefined)throw Error('语音回复不能指定其他对象')

@@ -1,3 +1,4 @@
+import {OneBotApiError} from './connection.js'
 import {QQ_PUBLIC_CHAT_ACTIONS,QQ_PUBLIC_SCOPED_ACTIONS} from './chat-actions.js'
 import {qqChatOnly} from './authority.js'
 import {questionOrigin} from '../question-origin.js'
@@ -13,7 +14,7 @@ import type {WeixinChannel} from '../../domain.js'
 import {QQ_ACTIONS,QQ_ACTION_CATEGORIES,QQ_ACTION_MAP,type ApiSchema,type QqAction} from './action-catalog.js'
 import {qqSettings,validQqId,qqGroupPeer} from './settings.js'
 
-export interface QqActionReceipt {id:string;action:string;at:number;status:'pending'|'confirmed'|'unknown'}
+export interface QqActionReceipt {id:string;action:string;at:number;status:'pending'|'confirmed'|'unknown'|'failed';error?:string}
 export type QqActionCall=(channelId:string,action:string,params:Record<string,unknown>,signal:AbortSignal,guard:()=>void)=>Promise<unknown>
 
 export function validateQqParams(schema:ApiSchema,value:unknown,path='params'):void {
@@ -186,7 +187,8 @@ export function qqActionTools(owner:string,store:PartnerStore,call:QqActionCall,
    const safe=cleanResult(result)??null,encoded=JSON.stringify(safe)
    return {operation:action.id,status:'confirmed',...(action.id==='add_custom_face'&&result&&typeof result==='object'&&typeof (result as {emoji_id?:unknown}).emoji_id==='string'?{stickerId:'qq-custom-'+createHash('sha256').update((result as {emoji_id:string}).emoji_id).digest('hex').slice(0,32),next:'收藏已成功。请用 modify_custom_face 为 result.emoji_id 补上名称、情绪和适用场景关键词，方便以后查找；合适时 partner_chat_reply 使用 stickerId 发送。自主活动可安静结束；私聊沿用本轮前置回应，不重复播报。'}:{}),result:encoded&&encoded.length>64000?{truncated:true,excerpt:encoded.slice(0,64000)}:safe}
   }catch(error){
-   if(action.effect!=='read')await store.update(state=>{const receipt=state.channels.find(c=>c.id===channel.id)?.qqActivity?.find(r=>r.id===receiptId);if(receipt&&receipt.status!=='confirmed')receipt.status='unknown'})
+   if(action.effect!=='read')await store.update(state=>{const receipt=state.channels.find(c=>c.id===channel.id)?.qqActivity?.find(r=>r.id===receiptId);if(receipt&&receipt.status!=='confirmed'){receipt.status=error instanceof OneBotApiError?'failed':'unknown';if(error instanceof OneBotApiError)receipt.error=error.message}})
+   if(error instanceof OneBotApiError)throw Error(error.message+'；这不是超时，不要声称已成功或自动重复发送。')
    throw Error(action.effect==='read'?'QQ 查询未完成，请检查连接、参数和账号权限':'QQ 操作未完成确认；请检查操作记录和 QQ 实际结果，勿自动重复发送')
   }finally{if(attempted&&action.category==='stickers'&&action.effect!=='read')stickersChanged(channel.id)}
  }}]

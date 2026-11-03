@@ -246,3 +246,13 @@ test('group poke defaults to the actual source group and never requires private 
  assert.deepEqual(f.requests[0].params,{group_id:493531768,user_id:33445566})
  const p=fixture();await assert.rejects(p.call('send_poke',{user_id:33445566}),/私聊对象尚未授权/)
 })
+
+test('explicit remote API failure is recorded separately from timeout and retained on replay',async()=>{
+ const {OneBotApiError}=await import('../lib/channels/qq/connection.js')
+ const f=fixture();let calls=0
+ const tool=qqActionTools('c',f.store,async()=>{calls++;throw new OneBotApiError(1200,'OIDB error 1002 on 0xed3_1: Process_Nudge failed')})[0]
+ const args={action:'call',operation:'send_poke',params:{group_id:493531768,user_id:1433070880}}
+ await assert.rejects(tool.execute(args,f.exec),/明确返回失败.*OIDB 1002/)
+ assert.equal(f.channel.qqActivity[0].status,'failed');assert.match(f.channel.qqActivity[0].error,/Process_Nudge/)
+ assert.equal((await tool.execute(args,f.exec)).status,'failed');assert.equal(calls,1)
+})

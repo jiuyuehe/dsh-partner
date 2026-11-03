@@ -264,3 +264,9 @@ test('forward WS delivers poke notices through the same poll path as chat',async
  const batch=await api.poll(undefined,AbortSignal.timeout(3000),100)
  assert.equal(batch.messages.length,1);assert.match(batch.messages[0].text,/戳了戳你/)
 })
+
+test('API failure preserves safe protocol diagnostics and does not reflect server secrets',async t=>{
+ const s=await server(t,(r,ws)=>{ws.send(JSON.stringify({echo:r.echo,status:'failed',retcode:1200,wording:'OIDB error 1002 on 0xed3_1: Process_Nudge failed token=secret https://private.invalid'}));return false})
+ const c=new OneBotConnection(s.url,'');t.after(()=>c.close())
+ await assert.rejects(c.call('send_poke',{}),error=>{assert.match(error.message,/OIDB 1002.*0xed3_1.*Process_Nudge failed/);assert.ok(!/secret|private.invalid/.test(error.message));return true})
+})
