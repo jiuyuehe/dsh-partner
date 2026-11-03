@@ -1,8 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {ThoughtService,thoughtTargetAllowed,renderThoughts,selectThought,thoughtPriority} from '../lib/character/thoughts.js'
+import {ThoughtService,thoughtTargetAllowed,renderThoughts,thoughtPriority} from '../lib/character/thoughts.js'
 import {thoughtTool} from '../lib/character/thought-tool.js'
-import {activityPolicyCurrent,postReplyProbability} from '../lib/character/post-reply.js'
+import {activityPolicyCurrent} from '../lib/character/post-reply.js'
 import {qqChatOnly} from '../lib/channels/qq/authority.js'
 import {idleContactDue,IDLE_CONTACT_NOTICE} from '../lib/character/idle-contact.js'
 import {PartnerAgentRuntime} from '../lib/agent-runtime.js'
@@ -26,7 +26,6 @@ test('a real group exchange can form a cross-session thought without granting th
  const events=[{type:'user/message',data:{id:'guest',source:{kind:'user'}}}];f.group.inboundMessageIds=['guest']
  assert.equal(qqChatOnly({session:{id:f.group.sessionId,snapshotEvents:()=>events}},f.state),true)
  assert.match(renderThoughts(f.state,f.c,f.owner),/想找归属账号/)
- assert.equal(selectThought(f.state,f.c,()=>0).id,f.c.thoughts[0].id)
 })
 test('private source never leaks through shared memory to another person or group',async()=>{
  const f=fixture();f.turn.sourceRouteIds=['owner'];f.proposal.sourceRouteIds=['owner'];f.proposal.value.targetRouteId='owner'
@@ -58,16 +57,12 @@ test('thought activity stays authorized only while its actual source and destina
  const events=[{type:'user/message',data:{id:'notice',source:{kind:'plugin:@lemoncat7/dsh-partner',form:'notice',summary:IDLE_CONTACT_NOTICE}}}]
  assert.equal(qqChatOnly({session:{id:f.owner.sessionId,snapshotEvents:()=>events}},f.state),true)
 })
-test('autonomy enters the chosen destination through the original session/reply pipeline',async()=>{
+test('stored thoughts do not randomly choose the next activity destination',async()=>{
  const f=fixture();await f.service.apply(f.turn,f.proposal)
- const events=[{type:'user/message',seq:1,time:now-7200000,data:{id:'u',source:{kind:'user'},content:[{type:'text',text:'你好'}]}}],followed=[]
- const agent={status:'idle',session:{id:f.owner.sessionId,seq:1,snapshotEvents:()=>events},followup:m=>followed.push(m)}
- const runtime=new PartnerAgentRuntime({agents:{get:()=>undefined}},f.store,'/tmp');runtime.isArchived=()=>false;runtime.ensureAgent=async(c,r)=>{assert.equal(r.id,'owner');return agent}
- const random=Math.random;Math.random=()=>0
- try{await runtime.idleContact('c')}finally{Math.random=random}
- assert.equal(followed.length,1);assert.equal(f.owner.idleContactState.kind,'thought');assert.equal(f.local.idleContactState,undefined)
- assert.match(followed[0].content[0].text,/最近在想什么/)
- assert.equal(idleContactDue(f.state,f.c,{id:'u',at:now-7200000},Date.now(),'Asia/Shanghai','local'),false,'switching destinations cannot reroll the minute')
+ const events=[{type:'user/message',seq:1,time:now-7200000,data:{id:'u',source:{kind:'user'},content:[]}}],followed=[]
+ const agent={status:'idle',session:{id:f.local.sessionId,seq:1,snapshotEvents:()=>events},followup:m=>followed.push(m)}
+ const runtime=new PartnerAgentRuntime({agents:{get:()=>undefined}},f.store,'/tmp');runtime.isArchived=()=>false;runtime.ensureAgent=async(c,r)=>{assert.equal(r.id,'local');return agent}
+ await runtime.idleContact('c');assert.equal(followed.length,1);assert.equal(f.local.idleContactState.kind,'autonomous');assert.equal(f.owner.idleContactState,undefined)
 })
 test('explicit thought completion is only available to a current autonomous activity',async()=>{
  const f=fixture();await f.service.apply(f.turn,f.proposal)
@@ -75,20 +70,15 @@ test('explicit thought completion is only available to a current autonomous acti
  const agent={session:{id:f.owner.sessionId,snapshotEvents:()=>events}}
  await assert.rejects(tool.execute({action:'settle',id:f.c.thoughts[0].id,status:'done',reason:'完成'}, {agent,signal:new AbortController().signal,concludeTurn(){}}),/自主活动/)
 })
-test('continued activity uses decaying probability without a fixed five-round cutoff',()=>{
- const f=fixture();assert.ok(postReplyProbability(f.c,5)>0);assert.ok(postReplyProbability(f.c,12)>0)
- assert.ok(postReplyProbability(f.c,12)<postReplyProbability(f.c,5))
-})
-
 test('autonomous focus chooses one destination, persists it, and finishes without sending',async()=>{
  const f=fixture();await f.service.apply(f.turn,f.proposal);const t=f.c.thoughts[0]
- f.owner.idleContactState={kind:'thought',thoughtId:t.id,userMessageId:'u',messageId:'notice',policyRevision:1}
+ f.c.idleContact.routeId='group';f.group.idleContactState={kind:'autonomous',userMessageId:'u',messageId:'notice',policyRevision:1}
  const events=[{type:'user/message',seq:1,data:{id:'u',source:{kind:'user'}}},{type:'turn/start',seq:2},{type:'user/message',seq:3,data:{id:'notice',source:{kind:'plugin:@lemoncat7/dsh-partner',form:'notice',summary:IDLE_CONTACT_NOTICE}}}]
  let ended=0
- const exec={agent:{session:{id:f.owner.sessionId,snapshotEvents:()=>events}},signal:new AbortController().signal,concludeTurn(){ended++}}
- const result=await thoughtTool('c',f.store).execute({action:'focus',id:t.id,routeId:'group',reason:'想回到原群里接着聊'},exec)
- assert.equal(t.targetRouteId,'group');assert.equal(ended,1);assert.equal(result.kind,'partner-activity-silent-v1')
- assert.equal(f.group.idleContactState,undefined,'focus alone never starts another turn or sends')
+ const exec={agent:{session:{id:f.group.sessionId,snapshotEvents:()=>events}},signal:new AbortController().signal,concludeTurn(){ended++}}
+ const result=await thoughtTool('c',f.store).execute({action:'focus',id:t.id,routeId:'owner',reason:'想找归属账号接着聊'},exec)
+ assert.equal(t.targetRouteId,'owner');assert.equal(ended,1);assert.equal(result.kind,'partner-activity-silent-v1')
+ assert.equal(f.owner.idleContactState,undefined,'focus alone never starts another turn or sends');assert.equal(f.c.activityPlan.status,'waiting')
 })
 
 test('shared background extraction generates thoughts without an additional model call',async t=>{

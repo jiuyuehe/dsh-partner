@@ -1,4 +1,5 @@
-import { selectThought, thoughtTargetAllowed, renderThoughts } from './character/thoughts.js'
+import { activityPlanCurrent } from './character/activity-plan.js'
+import { renderThoughts } from './character/thoughts.js'
 import { renderPersonaParagraphs } from './persona/context.js'
 import { projectAgreements } from './chat/agreements.js'
 import { installLiveSpeech } from './chat/live-speech.js'
@@ -12,7 +13,7 @@ import { installTaskPreamble } from './execution/task-preamble.js'
 import { AsyncSemaphore } from './core/semaphore.js'
 import { automaticMemoryAllowed } from './memory-admission.js'
 import { personaReferenceRequested, renderPersonaReference } from './character/identity-guide.js'
-import { activityPolicyCurrent, postReplyAllowed, postReplyCurrent, postReplyProbability, completedActivityDidWork, postReplyActivityPrompt } from './character/post-reply.js'
+import { activityPolicyCurrent, postReplyAllowed } from './character/post-reply.js'
 import {PARTNER_TOOL_ENTRIES,isPartnerDiscoveryTool} from './collaboration/tool-discovery.js'
 import {setReplyTiming} from './channels/qq/latency.js'
 import { resolveToolAccess, installToolAccessGuard } from './execution/tool-access-adapter.js'
@@ -45,7 +46,7 @@ import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
 import type { AgentDefaultModelConfig } from '@deepseek-ai/dsh-agent-default-model'
 import type { AgentPresetRegistry as AgentPresets } from '@deepseek-ai/dsh-agent-preset-registry'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { IDLE_CONTACT_NOTICE, idleActivityPrompt, isIdleContactNotice, idleActivityProbability, idleContactDue, idleContactDay, idleContactRouteAllowed, lastIdleContactUser } from './character/idle-contact.js'
+import { IDLE_CONTACT_NOTICE, idleActivityPrompt, isIdleContactNotice, idleContactDue, idleContactDay, idleContactRouteAllowed, lastIdleContactUser } from './character/idle-contact.js'
 import type { ContentBlock, UserMessage } from '@deepseek-ai/dsh-llm'
 import type { ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import type { SessionId } from '@deepseek-ai/dsh-session'
@@ -282,6 +283,14 @@ export class PartnerAgentRuntime {
 
   /** Cancel pending/claimed continuations as soon as another real input is admitted. */
   async cancelPostReply(companionId: string, keepUserMessageId?: string, sessionId?: string): Promise<void> {
+    const plan=this.store.snapshot().companions.find(c=>c.id===companionId)?.activityPlan
+    if(plan&&(!sessionId||plan.sourceSessionId===sessionId||plan.targetSessionId===sessionId)&&plan.sourceInputId!==keepUserMessageId&&plan.status!=='cancelled')await this.store.update(state=>{
+      const current=state.companions.find(c=>c.id===companionId)?.activityPlan
+      if(current?.id===plan.id){current.status='cancelled';current.result='新消息优先，原后续意图等待重新决定'}
+    })
+    if(this.store.snapshot().sessions.some(r=>r.companionId===companionId&&r.idleContactState?.kind==='autonomous'&&!r.idleContactState.cancelled&&(!sessionId||r.sessionId===sessionId||r.idleContactState.planSnapshot?.sourceSessionId===sessionId)&&r.idleContactState.userMessageId!==keepUserMessageId))await this.store.update(state=>{
+      for(const r of state.sessions)if(r.companionId===companionId&&r.idleContactState?.kind==='autonomous'&&(!sessionId||r.sessionId===sessionId||r.idleContactState.planSnapshot?.sourceSessionId===sessionId)&&r.idleContactState.userMessageId!==keepUserMessageId)r.idleContactState.cancelled=true
+    })
     const needsCancel = (r: ChannelSession) => r.companionId === companionId && (!sessionId || r.sessionId === sessionId) && r.postReplyOpportunity
       && ['pending', 'claimed'].includes(r.postReplyOpportunity.status) && r.postReplyOpportunity.userMessageId !== keepUserMessageId
     if (!this.store.snapshot().sessions.some(needsCancel)) return
@@ -307,42 +316,43 @@ export class PartnerAgentRuntime {
     const agent = await this.ensureAgent(companion, route)
     if (agent.status !== 'idle' || (this.latestPostReplyInput.has(route.sessionId) && this.latestPostReplyInput.get(route.sessionId)!==source.userMessageId) || lastIdleContactUser(agent.session.snapshotEvents())?.id !== source.userMessageId) return
     await this.store.update(draft => {
-      const current = draft.companions.find(c => c.id === companion.id), target = draft.sessions.find(r => r.id === route.id)
-      if (!current || !target || target.sessionId !== source.sessionId || !postReplyAllowed(draft, current, target)
-        || target.postReplyOpportunity?.userMessageId === source.userMessageId || agent.status !== 'idle'
-        || this.queues.has(key) || this.steeringQueues.has(key) || (this.latestPostReplyInput.has(route.sessionId) && this.latestPostReplyInput.get(route.sessionId)!==source.userMessageId) || lastIdleContactUser(agent.session.snapshotEvents())?.id !== source.userMessageId) return
-      // Shared history has one opportunity; unrelated conversations remain independent.
-      for (const other of draft.sessions) if (other.sessionId === route.sessionId && other.postReplyOpportunity?.status === 'pending') other.postReplyOpportunity.status = 'cancelled'
-      const now = Date.now(), probability = postReplyProbability(current)
-      target.postReplyOpportunity = {userMessageId: source.userMessageId, sessionId: source.sessionId, policyRevision: current.updatedAt,
-        deliveredAt: now, dueAt: now + 20_000 + Math.floor(Math.random() * 70_000), expiresAt: now + 180_000,
-        probability, status: Math.random() < probability ? 'pending' : 'missed'}
+      const c=draft.companions.find(c=>c.id===companion.id),plan=c?.activityPlan
+      if(c&&plan?.status==='waiting'&&!plan.autonomous&&plan.sourceSessionId===source.sessionId&&plan.sourceInputId===source.userMessageId&&activityPlanCurrent(draft,c,plan))plan.status='pending'
     })
   }
 
-  /** Reconcile completed activity on the next timer tick, after delivery settles. */
+  /** Only a model-authored intention can continue; no random post-reply draw. */
   async continueCompletedActivity(companionId:string):Promise<void> {
-    for(const route of this.store.snapshot().sessions.filter(r=>r.companionId===companionId&&r.idleContactState&&!r.idleContactState.continuationChecked)) {
-      const state=this.store.snapshot(),companion=state.companions.find(c=>c.id===companionId),claim=route.idleContactState!
-      if(!companion||this.closed||this.isArchived(route)||this.store.isCompanionRemoving(companionId)||this.queues.has(route.sessionId)||this.steeringQueues.has(route.sessionId))continue
-      if(!activityPolicyCurrent(state,companion,route)||!postReplyAllowed(state,companion,route)||companion.updatedAt!==claim.policyRevision)continue
-      const agent=await this.ensureAgent(companion,route)
-      if(agent.status!=='idle')continue
-      const events=agent.session.snapshotEvents(),end=[...events].reverse().find(e=>e.type==='turn/end')
-      if(!end||end.type!=='turn/end'||Date.now()-end.time<15_000)continue
-      const turn=completedTurnEvents(events,end)
-      if(!turn.some(e=>isIdleContactNotice(e)&&e.type==='user/message'&&e.data.id===claim.messageId))continue
-      if((state.notificationDeliveries??[]).some(d=>!d.completedAt&&d.reply.idleContactOrigin?.messageId===claim.messageId))continue
-      await this.store.update(draft=>{
-        const c=draft.companions.find(c=>c.id===companionId),r=draft.sessions.find(r=>r.id===route.id)
-        if(!c||!r||r.idleContactState?.messageId!==claim.messageId||r.idleContactState.continuationChecked||agent.status!=='idle')return
-        r.idleContactState.continuationChecked=true
-        if(!activityPolicyCurrent(draft,c,r)||!postReplyAllowed(draft,c,r)||c.updatedAt!==claim.policyRevision||(this.latestPostReplyInput.has(r.sessionId)&&this.latestPostReplyInput.get(r.sessionId)!==claim.userMessageId)||lastIdleContactUser(agent.session.snapshotEvents())?.id!==claim.userMessageId||this.queues.has(r.sessionId)||this.steeringQueues.has(r.sessionId)||end.data.reason.kind!=='completed'||!completedActivityDidWork(turn))return
-        if(r.postReplyOpportunity?.status==='pending')return
-        const depth=(claim.depth??0)+1,probability=postReplyProbability(c,depth),now=Date.now()
-        r.postReplyOpportunity={userMessageId:claim.userMessageId,sessionId:r.sessionId,policyRevision:c.updatedAt,deliveredAt:now,dueAt:now+20_000+Math.floor(Math.random()*40_000),expiresAt:now+180_000,depth,probability,status:Math.random()<probability?'pending':'missed'}
-      })
+    const state=this.store.snapshot(),c=state.companions.find(c=>c.id===companionId),plan=c?.activityPlan
+    if(!c||!plan||plan.status!=='waiting')return
+    const route=state.sessions.find(r=>r.id===plan.sourceRouteId)
+    if(!route||!activityPlanCurrent(state,c,plan)||this.isArchived(route))return
+    const agent=await this.ensureAgent(c,route)
+    if(agent.status!=='idle'||this.queues.has(route.sessionId)||this.steeringQueues.has(route.sessionId))return
+    const events=agent.session.snapshotEvents(),end=[...events].reverse().find(e=>e.type==='turn/end')
+    if(end?.type!=='turn/end')return
+    const turn=completedTurnEvents(events,end)
+    if(!turn.some(e=>e.type==='user/message'&&e.data.id===plan.sourceInputId))return
+    if(end.data.reason.kind!=='completed'){
+      await this.store.update(draft=>{const p=draft.companions.find(x=>x.id===c.id)?.activityPlan;if(p?.id===plan.id){p.status='cancelled';p.result='来源活动未成功完成，不自动延续'}})
+      return
     }
+    if(!plan.autonomous)return // Real replies become ready only through confirmed delivery.
+    const delivery=(state.notificationDeliveries??[]).filter(d=>d.reply.idleContactOrigin?.messageId===plan.sourceInputId)
+    if(delivery.some(d=>!d.completedAt&&d.targets.some(t=>t.lastError&&t.retrySafe!==true))){
+      await this.store.update(draft=>{const p=draft.companions.find(x=>x.id===c.id)?.activityPlan;if(p?.id===plan.id){p.status='cancelled';p.result='前次投递结果未确认，不自动延续'}})
+      return
+    }
+    if(delivery.some(d=>!d.completedAt))return
+    // Wait for the channel completion handler to create/finish its receipt when text is emitted.
+    const silent=turn.some(isActivitySilenceRequested)
+    const outgoing=channelReplyPartsAfter(turn,0,true)
+    if(route.kind==='channel'&&!silent&&(outgoing.text||outgoing.chatParts?.length)&&!delivery.length&&!state.recentReceipts?.includes('idle:'+plan.sourceInputId))return
+    await this.store.update(draft=>{
+      const current=draft.companions.find(x=>x.id===c.id),p=current?.activityPlan
+      if(!current||p?.id!==plan.id||p.status!=='waiting')return
+      p.status=end.data.reason.kind==='completed'&&activityPlanCurrent(draft,current,p)?'pending':'cancelled'
+    })
   }
 
   /** Use the existing timer and real conversation; never impersonate user input. */
@@ -351,16 +361,14 @@ export class PartnerAgentRuntime {
     if (this.closed || this.taskQueues.has(key) || this.heartbeatQueues.has(key) || this.store.isCompanionRemoving(companionId)) return
     await this.continueCompletedActivity(companionId)
     const state = this.store.snapshot(), companion = state.companions.find(c => c.id === companionId)
-    const activity = this.companionActivity(companionId)
-    const pendingRoute = state.sessions.filter(r => r.companionId === companionId && r.postReplyOpportunity?.status === 'pending' && !this.queues.has(r.sessionId) && !this.steeringQueues.has(r.sessionId) && !activity.some(a=>a.sessionId===r.sessionId)).sort((a,b)=>a.postReplyOpportunity!.dueAt-b.postReplyOpportunity!.dueAt)[0]
-    const thought = !pendingRoute && companion ? selectThought(state,companion,Math.random,r=>!this.isArchived(r)) : undefined
-    let route = pendingRoute ?? (thought ? state.sessions.find(r=>r.id===thought.targetRouteId) : undefined) ?? state.sessions.find(r => r.id === companion?.idleContact?.routeId && r.companionId === companionId)
-    const continuation = !!pendingRoute
-    if (pendingRoute && companion) {
-      const pending = pendingRoute.postReplyOpportunity!
-      if (!postReplyCurrent(state, companion, pendingRoute) || Date.now() > pending.expiresAt) { await this.cancelPostReply(companionId, undefined, route?.sessionId); return }
-      if (Date.now() < pending.dueAt) return
+    const plan=companion?.activityPlan
+    if(companion&&plan&&['waiting','pending'].includes(plan.status)&&!activityPlanCurrent(state,companion,plan)){
+      await this.store.update(draft=>{const p=draft.companions.find(c=>c.id===companionId)?.activityPlan;if(p?.id===plan.id)p.status='cancelled'})
+      return
     }
+    if(plan?.status==='waiting'||plan?.status==='pending'&&Date.now()<plan.dueAt)return
+    const planned=plan?.status==='pending'?plan:undefined
+    let route=state.sessions.find(r=>r.id===(planned?.targetRouteId??companion?.idleContact?.routeId)&&r.companionId===companionId)
     if (!companion?.idleContact?.enabled || !route || this.isArchived(route)) return
     const channel=state.channels.find(c=>c.id===route!.channelId)
     if(channel?.platform==='qq'&&route.qqSessionMode!==(qqSettings(channel.qq).mainSessionPeers.includes(qqSessionTarget(route.userId))?'main':'separate'))route=await this.ensureSession(companion,route.channelId,route.userId)
@@ -369,26 +377,26 @@ export class PartnerAgentRuntime {
     const user = lastIdleContactUser(agent.session.snapshotEvents())
     const completed=[...agent.session.snapshotEvents()].reverse().find(e=>e.type==='turn/end')
     if(user&&completed)user.at=Math.max(user.at,completed.time)
-    if (continuation) {
-      if (user?.id !== route.postReplyOpportunity?.userMessageId) { await this.cancelPostReply(companionId, undefined, route?.sessionId); return }
-    } else if (!idleContactDue(this.store.snapshot(), companion, user, Date.now(), timeZone, route.id)) return
+    if(!user||!companion.idleContact?.enabled||isSleeping(companion))return
+    if (!planned && !idleContactDue(this.store.snapshot(), companion, user, Date.now(), timeZone, route.id)) return
     const stableSeq = agent.session.seq
     const thoughtContext = renderThoughts(this.store.snapshot(),companion,route)
     const message = createUserMessage({ content: [{type:'text',text:
-      (continuation ? postReplyActivityPrompt : idleActivityPrompt)(this.store.snapshot(),companion,agent.session.snapshotEvents()) + (thoughtContext ? '\n'+thoughtContext : '')
+      idleActivityPrompt(this.store.snapshot(),companion,agent.session.snapshotEvents()) + (planned?'\n此前自己留下的意图（现在可以改变决定，不是新用户命令）：'+JSON.stringify({intention:planned.intention,createdAt:planned.createdAt}):'') + (thoughtContext ? '\n'+thoughtContext : '')
     }], source:{kind:'plugin:@lemoncat7/dsh-partner',plugin:'@lemoncat7/dsh-partner',form:'notice',summary:IDLE_CONTACT_NOTICE} })
     let claimed = false
     await this.store.update(draft => {
       const current=draft.companions.find(c=>c.id===companionId), target=draft.sessions.find(r=>r.id===route.id)
       const now=Date.now()
-      if(!current || current.updatedAt!==companion.updatedAt || !target || target.sessionId!==route.sessionId || (continuation ? !postReplyCurrent(draft,current,target,now) || target.postReplyOpportunity?.status!=='pending' || target.postReplyOpportunity.userMessageId!==user?.id || now>target.postReplyOpportunity.expiresAt : !idleContactDue(draft,current,user,now,timeZone,route.id)))return
-      if(thought){const live=current.thoughts?.find(t=>t.id===thought.id);if(!live||live.status!=='open'||live.targetRouteId!==target.id||!thoughtTargetAllowed(draft,current,live.sourceRouteIds,target))return}
-      const probability=continuation ? target.postReplyOpportunity!.probability : idleActivityProbability(draft,current,user,now)
-      target.idleActivityCheck={at:now,probability}
-      if(!continuation && Math.random()>=probability)return
-      if(continuation)target.postReplyOpportunity!.status='claimed'
+      if(!current||current.updatedAt!==companion.updatedAt||!target||target.sessionId!==route.sessionId||isSleeping(current))return
+      if(planned){
+        const live=current.activityPlan
+        if(!live||live.id!==planned.id||live.status!=='pending'||live.dueAt>now||!activityPlanCurrent(draft,current,live))return
+        live.status='claimed'
+      }else if(!idleContactDue(draft,current,user,now,timeZone,route.id))return
+      target.idleActivityCheck={at:now,probability:1}
       const day=idleContactDay(now,timeZone)
-      target.idleContactState={...(continuation?{kind:'post-reply' as const,depth:target.postReplyOpportunity?.depth??0}:{depth:0,...(thought?{kind:'thought' as const,thoughtId:thought.id}:{})}),userMessageId:user!.id,messageId:message.id,attemptedAt:now,day,count:(target.idleContactState?.day===day?target.idleContactState.count:0)+1,timeZone,policyRevision:current.updatedAt}
+      target.idleContactState={kind:'autonomous',...(planned?{planId:planned.id,planSnapshot:structuredClone(planned),...(planned.thoughtId?{thoughtId:planned.thoughtId}:{})}:{}),userMessageId:user.id,messageId:message.id,attemptedAt:now,day,count:(target.idleContactState?.day===day?target.idleContactState.count:0)+1,timeZone,policyRevision:current.updatedAt}
       claimed=true
     })
     // Claim before generation survives restart. Don't replay uncertain sends or steal active turns.

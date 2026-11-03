@@ -56,15 +56,6 @@ export function activeThoughts(state:PartnerState,c:Companion,route?:ChannelSess
   return (c.thoughts??[]).filter(t=>t.status==='open'&&(!route||thoughtTargetAllowed(state,c,t.sourceRouteIds,route)))
     .sort((a,b)=>thoughtPriority(b,now)-thoughtPriority(a,now))
 }
-/** Pick a conversational destination without creating a second scheduler. Repetition is a soft weight. */
-export function selectThought(state:PartnerState,c:Companion,random=Math.random,usable:(route:ChannelSession)=>boolean=()=>true):CompanionThought|undefined {
-  const choices=activeThoughts(state,c).filter(t=>{const target=state.sessions.find(r=>r.id===t.targetRouteId);return !!target&&usable(target)&&thoughtTargetAllowed(state,c,t.sourceRouteIds,target)})
-  // The current conversation remains a candidate even when thoughts exist.
-  if(!choices.length)return undefined
-  let roll=random()*(0.35+choices.reduce((sum,t)=>sum+thoughtPriority(t),0))
-  for(const t of choices){roll-=thoughtPriority(t);if(roll<0)return t}
-  return undefined
-}
 export function renderThoughts(state:PartnerState,c:Companion,route:ChannelSession):string {
   const thoughts=activeThoughts(state,c,route).slice(0,12)
   if(!thoughts.length)return ''

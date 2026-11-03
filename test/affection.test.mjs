@@ -81,9 +81,9 @@ test('eleven bidirectional stages, saturation and positive probability even at n
  }
  f.c.idleContact={enabled:true,routeId:'owner',idleMinutes:30}
  const last={id:'u',at:now-60000}
- assert.equal(idleActivityProbability(f.state,f.c,last,now),0.5/30)
+ assert.equal(idleActivityProbability(f.state,f.c,last,now),0)
  f.c.characterCard.affectionEnabled=false
- assert.equal(idleActivityProbability(f.state,f.c,last,now),1/30)
+ assert.equal(idleActivityProbability(f.state,f.c,last,now),0)
  assert.equal(renderAffection(f.c,false),'')
  assert.equal(affectionProgress({score:80}).score,80,'legacy values are preserved')
 })

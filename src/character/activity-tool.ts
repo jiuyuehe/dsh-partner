@@ -28,7 +28,7 @@ export function canFinishIdleActivity(owner:string,state:PartnerState,sessionId:
 export function idleActivityFinishTool(owner:string,store:PartnerStore):ToolDefinition {
   return {
     name:'partner_activity_finish',
-    description:'安静结束系统发起的闲时自主活动。已使用工具完成活动、已经发送语音或不想行动时调用；不发送聊天正文。仅限当前自主活动，不可用来跳过用户消息或工作任务。需要聊天则遵循当前人格与分段设置使用 partner_chat_reply；无需分段或聊天工具不可用时可用正常最终回复。',
+    description:'安静结束系统唤起的自主活动。已使用工具完成活动、已经发送语音或不想行动时调用；不发送聊天正文。仅限当前自主活动，不可用来跳过用户消息或工作任务。需要聊天则遵循当前人格与分段设置使用 partner_chat_reply；无需分段或聊天工具不可用时可用正常最终回复。',
     parameters:{type:'object',properties:{reason:{type:'string',maxLength:300}},required:['reason'],additionalProperties:false},
     output:{schema:{type:'object'},render:()=>[{type:'text',text:'本次自主活动已结束，不发送聊天正文。'}],presentationMeta:(_args,value)=>value},
     presentCall:()=>({card:'generic',title:'自主活动结束'}),

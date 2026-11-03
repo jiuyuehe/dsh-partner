@@ -204,28 +204,24 @@ test('offline QQ proactive delivery is persisted as unsent before attempting to 
 })
 
 
-test('minute probability grows linearly, clamps to 100%, and activity resets across routes',()=>{
+test('idle wake uses the configured interval, with no minute lottery',()=>{
  const {state,companion,route}=fixture();companion.idleContact.idleMinutes=60
  route.lastMessageAt=now;const fresh={id:'fresh',at:now}
- for(const [minute,chance] of [[0,0],[0.9,0],[1,1/60],[30,0.5],[60,1],[120,1]])assert.equal(idleActivityProbability(state,companion,fresh,now+minute*60000),chance)
+ for(const [minute,chance] of [[0,0],[0.9,0],[1,0],[30,0],[60,1],[120,1]])assert.equal(idleActivityProbability(state,companion,fresh,now+minute*60000),chance)
  route.idleContactState={attemptedAt:now+30*60000}
  assert.equal(idleActivityProbability(state,companion,fresh,now+30*60000),0)
  state.sessions.push({...route,id:'other',lastMessageAt:now+31*60000})
- assert.equal(idleActivityProbability(state,companion,fresh,now+32*60000),1/60)
+ assert.equal(idleActivityProbability(state,companion,fresh,now+32*60000),0)
  companion.sleepPolicy={enabled:true};companion.sleepState={episode:{startedAt:now,wakeAt:now+120*60000}}
  assert.equal(idleActivityProbability(state,companion,fresh,now+60*60000),0)
 })
-test('misses persist and cannot reroll in the same minute, including after restarting',async t=>{
+test('before due time no lottery or model request occurs',async()=>{
  const f=runtimeFixture(),time=Date.now();f.events[0].time=time-60000;f.route.lastMessageAt=time-60000
- let rolls=0;t.mock.method(Math,'random',()=>{rolls++;return 0.99})
- await f.runtime.idleContact('c');assert.equal(rolls,1);assert.equal(f.followed.length,0);assert.ok(f.route.idleActivityCheck.at)
- const restarted=new PartnerAgentRuntime({agents:{get:()=>undefined}},f.store,'/tmp');restarted.ensureAgent=async()=>f.agent;restarted.isArchived=()=>false
- await restarted.idleContact('c');assert.equal(rolls,1)
- f.route.idleActivityCheck.at-=60000;t.mock.method(Math,'random',()=>0)
- await restarted.idleContact('c');assert.equal(f.followed.length,1)
- assert.match(f.followed[0].content[0].text,/partner_activity_finish/)
- assert.doesNotMatch(f.followed[0].content[0].text,/只生成这次联系的最终正文/)
+ const random=Math.random;Math.random=()=>{throw Error('Unexpected random draw')}
+ try{await f.runtime.idleContact('c')}finally{Math.random=random}
+ assert.equal(f.followed.length,0);assert.equal(f.route.idleActivityCheck,undefined)
 })
+
 test('a silent autonomous decision never forwards its commentary as a channel message',async()=>{
  for(const type of ['tool/result','tool/ptc-dispatch']){
   const f=deliveryFixture();f.events.splice(-1,0,{type,seq:3.5,data:{message:{isError:false},isError:false,meta:{kind:'partner-activity-silent-v1'}}})
@@ -298,7 +294,7 @@ test('idle continuation keeps user and own reply anchors when autonomous chatter
  assert.equal(context.at(-1).text,'自主消息19')
  assert.equal(context[0].at,10);assert.deepEqual(events,before)
  const {state,companion}=fixture(),prompt=idleActivityPrompt(state,companion,events)
- assert.match(prompt,/不是只有刚回复后才能续话/)
+ assert.match(prompt,/自行决定此刻做什么/)
  assert.match(prompt,/partner_memory_recall/)
  assert.doesNotMatch(prompt,/闲下来时优先找一件|只有没有合适行动/)
 })

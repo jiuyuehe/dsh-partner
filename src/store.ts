@@ -300,6 +300,7 @@ function validateState(value: unknown): asserts value is PartnerState {
   validatePushState(state)
   for (const companion of state.companions!) {
     validateAgreements(companion.temporaryAgreements)
+    if (companion.activityPlan) { const p=companion.activityPlan; if(!['waiting','pending','claimed','cancelled'].includes(p.status)||!Number.isFinite(p.dueAt)||!Number.isFinite(p.createdAt)||!Number.isFinite(p.policyRevision)||typeof p.autonomous!=='boolean'||['id','sourceRouteId','sourceSessionId','sourceInputId','targetRouteId','targetSessionId','intention'].some(k=>typeof (p as unknown as Record<string,unknown>)[k]!=='string')||p.intention.length>300) throw Error('invalid activity plan') }
     if (companion.thoughts !== undefined && (!Array.isArray(companion.thoughts) || companion.thoughts.length>64 || companion.thoughts.some(t=>!t || typeof t.id!=='string' || typeof t.text!=='string' || t.text.length>300 || typeof t.why!=='string' || t.why.length>300 || !Array.isArray(t.sourceRouteIds) || t.sourceRouteIds.some(id=>typeof id!=='string') || typeof t.targetRouteId!=='string' || !['open','done','dismissed'].includes(t.status) || !Number.isFinite(t.createdAt) || !Number.isFinite(t.sourceAt) || !Number.isFinite(t.updatedAt) || !Number.isInteger(t.attempts) || t.attempts<0))) throw Error('invalid companion thoughts')
     if (companion.interactionReview !== undefined) {
       const review=companion.interactionReview

@@ -15,6 +15,7 @@ export function ThoughtsPanel({companionId}:{companionId:string}):JSX.Element {
     void refresh();const timer=setInterval(()=>void refresh(),30000)
     return()=>{alive=false;clearInterval(timer)}
   },[companionId,open,revision])
+  const plan=snapshot?.companions.find(c=>c.id===companionId)?.activityPlan
   const thoughts=[...(snapshot?.companions.find(c=>c.id===companionId)?.thoughts??[])].sort((a,b)=>b.updatedAt-a.updatedAt)
   const label=(id:string)=>{
     const route=snapshot?.sessions.find(r=>r.id===id)
@@ -27,6 +28,7 @@ export function ThoughtsPanel({companionId}:{companionId:string}):JSX.Element {
     <summary>最近在想什么 <small>{snapshot?`${thoughts.filter(t=>t.status==='open').length} 个还惦记着的念头`:'见闻、想法与后续'}</small></summary>
     <div className="dsh-partner-character-fields">
       <p className="dsh-partner-character-hint">从真实互动或自主活动中形成，由伙伴决定继续、换个会话聊，或放下。念头不是已发生的事实。</p>
+      {plan&&<p className="dsh-partner-character-hint" style={{overflowWrap:'anywhere'}}>下一步：{plan.intention}<br/>{label(plan.targetRouteId)} · {{waiting:'等待本轮完成',pending:'等待唤起',claimed:'已唤起',cancelled:'已取消'}[plan.status]}{plan.status==='pending'?` · ${new Date(plan.dueAt).toLocaleString()}`:''}</p>}
       {error&&<p role="alert" className="dsh-partner-inline-error">{error}</p>}
       {!snapshot&&loading&&<p role="status">正在读取…</p>}
       {snapshot&&!thoughts.length&&<p className="dsh-partner-character-hint">暂时没有留下念头，不要求每次互动都产生。</p>}
