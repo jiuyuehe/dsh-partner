@@ -412,3 +412,18 @@ test('fixed active agreements appear in actual request assembly and disappear on
  await f.store.update(s=>{s.companions[0].temporaryAgreements=[]})
  const next=await f.assemble();assert.ok(!next.sections.some(s=>s.name==='partner-active-agreements'));assert.equal(events.length,1)
 })
+
+test('exclusive role uses a single static section while tools and contexts survive; toggling restores normal sections',async t=>{
+ const f=await fixture(t,{compose:async ctx=>ctx.tools.register(defineContentToolFixture({name:'still_available',description:'A real tool',parameters:{},execute:async()=>[]}))})
+ f.root.systemPrompt.section({name:'other-plugin-static',order:2,text:'OTHER STATIC'})
+ f.agent.ctx.systemPrompt.context({name:'runtime-test',order:1,text:'CURRENT CONTEXT',required:true})
+ await f.store.update(s=>{s.companions[0].characterCard=normalizeCharacterCard({enabled:true,exclusivePrompt:true,roleText:'ONLY MY ROLE',chatStyle:'MY OWN VOICE'})})
+ const on=await f.assemble()
+ assert.equal(on.sections.length,1);assert.equal(on.sections[0].name,'partner-identity');assert.match(on.sections[0].text,/ONLY MY ROLE/);assert.match(on.sections[0].text,/MY OWN VOICE/)
+ assert.doesNotMatch(on.sections[0].text,/任务回应流程|OTHER STATIC|coding agent|聊天表达/)
+ assert.ok(on.tools.some(t=>t.name==='still_available'));assert.ok(on.contexts.some(c=>c.name==='runtime-test'))
+ await f.store.update(s=>{s.companions[0].characterCard.exclusivePrompt=false})
+ const off=await f.assemble();assert.ok(off.sections.some(s=>s.name==='other-plugin-static'));assert.ok(off.tools.some(t=>t.name==='still_available'))
+ await f.store.update(s=>{s.companions[0].characterCard.exclusivePrompt=true;s.companions[0].characterCard.enabled=false})
+ const disabled=await f.assemble();assert.ok(disabled.sections.some(s=>s.name==='other-plugin-static'))
+})

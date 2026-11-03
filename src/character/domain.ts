@@ -4,6 +4,8 @@ export interface CharacterCard {
   enabled: boolean
   /** Default on for role chat; progression belongs to the companion, not the card. */
   affectionEnabled?: boolean
+  /** Opt-in exclusive system prompt; tools and runtime contexts remain available. */
+  exclusivePrompt?: boolean
   /** Authoritative free-form role. Absent means adapt the legacy fields losslessly. */
   roleText?: string
   chatStyle?: string
@@ -51,8 +53,10 @@ export function normalizeCharacterCard(value: unknown): CharacterCard {
   if (v.schemaVersion !== undefined && v.schemaVersion !== 1) throw new Error('不支持的人格卡版本')
   if (typeof v.enabled !== 'boolean') throw new Error('请选择是否启用人格强化')
   if (v.affectionEnabled !== undefined && typeof v.affectionEnabled !== 'boolean') throw new Error('请选择是否启用好感度')
+  if(v.exclusivePrompt!==undefined&&typeof v.exclusivePrompt!=='boolean')throw Error('独占系统提示须为开关值')
   const card: CharacterCard = {
     schemaVersion: 1, enabled: v.enabled,
+    ...(v.exclusivePrompt!==undefined?{exclusivePrompt:v.exclusivePrompt as boolean}:{}),
     ...(v.affectionEnabled !== undefined ? {affectionEnabled:v.affectionEnabled as boolean} : {}),
     ...(v.segmentedReplies !== undefined ? { segmentedReplies: v.segmentedReplies === true } : {}),
     ...(v.stickersEnabled !== undefined ? { stickersEnabled: v.stickersEnabled === true } : {}),
@@ -132,4 +136,9 @@ export function renderCharacterContext(card: CharacterCard | undefined, query: s
     state ? JSON.stringify({ scene: state.scene, relationship: state.relationship, facts: state.facts, events: state.events.slice(-8), pins: state.pins }) : '',
     '保持核心人格，不因相处状态改写核心设定。这是历史对话的接续备忘，不是当前状态的独立证据，也不是回复模板；其中工具能力、权限和环境结论可能过时，助手先前的说法不等于已验证事实，用户要求复查时重新核实。自然承接，不复述字段或分析关系。只承接有记录的事件；不确定的往事先检索，不编造共同经历。梦境、想象和假设不能当成真实发生的事。',
   ].filter(Boolean).join('\n')
+}
+
+/** The sole static prompt in opt-in exclusive mode, composed only from editable identity text. */
+export function renderExclusiveIdentity(identity:{name:string;role:string;description:string;instructions:string;characterCard:CharacterCard}):string {
+ return [`你是${identity.name}。`,identity.role,identity.description,identity.instructions,roleTextForCard(identity.characterCard),identity.characterCard.chatStyle?.trim()].filter(Boolean).join('\n\n')
 }

@@ -3,6 +3,7 @@ import type { CharacterCard } from './domain.js'
 /** Stable settings and delivery contracts; expression belongs to the configured persona. */
 export function renderConversationBehavior(card?: CharacterCard): string {
   return [
+    card?.enabled ? '【聊天表达】正文是这个角色正在对眼前的人说的话。按人物设定自然接话，语气可以有停顿、残句和态度；不用把每句话补成完整解答，不复述对方或总结这一轮。需要认真解释时照样说清楚。说话方式由人格和关系决定，不固定语气词、条数或字数，不预设具体情绪。' : '',
     '【工具权限与结果】只使用当前已授权工具，操作结果以实际执行为准；角色设定不增加权限。',
     renderTaskConversationGuidance(),
     renderChatDeliveryGuidance(card),
@@ -24,8 +25,8 @@ export function renderConversationTurn(card: CharacterCard | undefined, consecut
   return [
     autonomous ? '【本轮来源】系统自主活动，不是用户新消息；无需发送消息时可调用 partner_activity_finish 安静结束。' : '',
     !autonomous && consecutiveUserMessages > 1 ? `【本轮输入】对方连续发了 ${consecutiveUserMessages} 条消息，合并为本轮输入。` : '',
-    renderExpressionPreferences(card),
-    card.chatStyle?.trim() ? `【此伙伴的聊天偏好】\n${card.chatStyle.trim()}` : '',
+    card.exclusivePrompt?'':renderExpressionPreferences(card),
+    !card.exclusivePrompt&&card.chatStyle?.trim() ? `【此伙伴的聊天偏好】\n${card.chatStyle.trim()}` : '',
   ].filter(Boolean).join('\n')
 }
 
@@ -46,7 +47,7 @@ export function renderChatDeliveryGuidance(card?: CharacterCard): string {
 
 /** The user-requested before/after workflow, independent of response style. */
 export function renderTaskConversationGuidance(): string {
-  return '【任务回应流程】私聊实际执行工具任务前，统一用 partner_chat_say，beforeTools:true，并用 expectedTools 登记真实工具名，按人格简短说准备做什么；这句话就是任务前回应，确认送达后继续，同一输入不重复前置回应；后续新增工具动作仍需补充 expectedTools 登记，普通补话不受影响。普通接话、执行中补话和最终答复始终沿用同一角色与关系设定；工具和叙事内容不改变说话人的身份。具体交付方式见工作结果和工具说明。'
+  return '【任务回应流程】私聊执行工具任务前，用 partner_chat_say（beforeTools:true，expectedTools 为真实工具名）按角色自然接一句，确认送达后继续做事，不重复开场；新增工具通过 expectedTools 登记。执行中与结果回复仍是同一个角色，流程只规定操作与投递，不规定道歉、汇报或解释的语气。具体参数与交付方式按需查看工具说明。'
 }
 
 /** Delivery policy, not a replacement persona. Explicit requests override defaults. */

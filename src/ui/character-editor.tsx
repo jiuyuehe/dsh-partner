@@ -1,3 +1,5 @@
+import { ExclusivePromptToggle } from './exclusive-prompt-toggle.js'
+import { renderExclusiveIdentity } from '../character/domain.js'
 import { AffectionPanel } from './affection-panel.js'
 import { renderIdentityRelationship } from '../character/relationship-adapter.js'
 import { PERSONA_REQUEST_EXAMPLE } from '../character/identity-guide.js'
@@ -81,6 +83,7 @@ function RoleFields({ card, onChange }: { card: CharacterCard; onChange(card: Ch
   return <div className="dsh-partner-character-section">
     <RoleReference />
     {card.roleText === undefined && roleTextForCard(card) && <p className="dsh-partner-character-hint">旧角色与示例完整保留；独立的旧关系字段会显示在“关系设定”。混写在正文里的专属关系请手动移过去，或让 AI 帮你拆分。</p>}
+    <ExclusivePromptToggle enabled={card.exclusivePrompt===true} onChange={enabled=>onChange({...card,exclusivePrompt:enabled})}/>
     <Field label="角色设定" hint="只写角色自身的身份、性格、语气与通用示例。与用户的关系、专属称呼请写在身份的“关系设定”，不要混入这里、聊天偏好或背景资料。"><textarea rows={14} maxLength={48000} value={roleTextForCard(card)} onChange={e => onChange({ ...card, roleText: e.target.value })} /></Field>
   </div>
 }
@@ -124,7 +127,7 @@ function CharacterTrial({ companion, card, relationshipText }: { companion: Comp
     try { normalizeCharacterCard(card); const result = await api<{reply:string}>(`/companions/${encodeURIComponent(companion.id)}/character/preview`, {method:'POST', body:JSON.stringify({card,message,history,relationshipText,audience})}); setHistory(old => [...old, {user:message,assistant:result.reply}].slice(-8)); setMessage('') }
     catch (e) { setError(errorMessage(e)) } finally { setBusy(false) }
   }
-  return <div className="dsh-partner-character-trial"><Field label="试聊对象" hint="只模拟关系加载，不会向 QQ 发消息。切换对象会清空试聊历史。"><select disabled={busy} value={audience} onChange={e => { setAudience(e.target.value as typeof audience); setHistory([]) }}><option value="default">普通会话 · 角色与关系</option><option value="qq-owner">QQ 归属账号 · 角色与关系</option><option value="qq-guest">QQ 其他账号 / 未绑定 · 仅角色</option></select></Field><details><summary>查看角色与聊天规则</summary><pre>{card.enabled ? [renderCharacterCore(card), renderIdentityRelationship({relationshipText}, audience === 'default' ? {channel:'default'} : {channel:'qq', matched:audience === 'qq-owner'}), renderConversationBehavior(card), renderConversationTurn(card, 1)].join('\n\n') : '角色聊天未启用。'}</pre></details><p className="dsh-partner-character-hint">使用此伙伴当前模型，最多保留 8 组试聊，不写正式记忆。这里仅预览语气，不预览分段或表情发送，不执行操作；正式会话按渠道与账号权限提供工具。</p>
+  return <div className="dsh-partner-character-trial"><Field label="试聊对象" hint="只模拟关系加载，不会向 QQ 发消息。切换对象会清空试聊历史。"><select disabled={busy} value={audience} onChange={e => { setAudience(e.target.value as typeof audience); setHistory([]) }}><option value="default">普通会话 · 角色与关系</option><option value="qq-owner">QQ 归属账号 · 角色与关系</option><option value="qq-guest">QQ 其他账号 / 未绑定 · 仅角色</option></select></Field><details><summary>查看角色与聊天规则</summary><pre>{card.enabled ? [card.exclusivePrompt?renderExclusiveIdentity({...companion,characterCard:card}):renderCharacterCore(card), renderIdentityRelationship({relationshipText}, audience === 'default' ? {channel:'default'} : {channel:'qq', matched:audience === 'qq-owner'}), card.exclusivePrompt?'':renderConversationBehavior(card), renderConversationTurn(card, 1)].join('\n\n') : '角色聊天未启用。'}</pre></details><p className="dsh-partner-character-hint">使用此伙伴当前模型，最多保留 8 组试聊，不写正式记忆。这里仅预览语气，不预览分段或表情发送，不执行操作；正式会话按渠道与账号权限提供工具。</p>
     <div aria-live="polite">{history.map((x, i) => <div className="dsh-partner-trial-exchange" key={i}><p><b>你</b>{x.user}</p><p><b>{companion.name}</b>{x.assistant}</p></div>)}</div>
     <Field label="试聊消息"><textarea rows={2} maxLength={2000} disabled={busy} value={message} onChange={e => setMessage(e.target.value)} /></Field>{error && <p role="alert" className="dsh-partner-inline-error">{error}</p>}
     <div className="dsh-partner-character-row"><button type="button" disabled={busy} onClick={() => setHistory([])}>重新试聊</button><button type="button" disabled={busy || !message.trim() || !card.enabled} onClick={() => void send()}>{busy ? '角色正在回复…' : '发送试聊'}</button></div>

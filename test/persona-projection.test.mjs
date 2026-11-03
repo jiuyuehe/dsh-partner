@@ -19,7 +19,7 @@ test('chat projection replaces only stock identity and defers known tool guidanc
   const result=projectConversationPrompt(a,agent,{roleEnabled:true,discovery:true})
   assert.deepEqual(a,before,'input must remain immutable')
   assert.equal(result.tools,a.tools);assert.equal(result.contexts,a.contexts)
-  assert.deepEqual(result.sections.map(s=>s.name),['harness:identity','partner-identity','tool:unknown','security:approval'])
+  assert.deepEqual(result.sections.map(s=>s.name),['partner-identity','tool:unknown','security:approval'])
   assert.equal(discoveredToolProtocol(agent,'write'),'Read before overwriting.')
   assert.equal(discoveredToolProtocol(agent,'job_output'),'Collect your background jobs.')
   assert.equal(discoveredToolProtocol(agent,'job_kill'),'Collect your background jobs.')
@@ -46,4 +46,17 @@ test('tool guidance is refreshed rather than accumulated across assemblies',()=>
  a.sections=a.sections.filter(s=>s.name!=='tool:write')
  projectConversationPrompt(a,agent,{roleEnabled:true,discovery:true})
  assert.equal(discoveredToolProtocol(agent,'write'),undefined)
+})
+
+test('custom harness identity and policies remain; role stays first without removing tools',()=>{
+ const a=fixture();a.sections[0].text+=' Custom instructions.'
+ const r=projectConversationPrompt(a,{}, {roleEnabled:true,discovery:false})
+ assert.equal(r.sections[0].name,'partner-identity');assert.ok(r.sections.includes(a.sections[0]));assert.equal(r.tools,a.tools);assert.ok(r.sections.some(s=>s.name==='security:approval'))
+})
+
+test('exclusive prompt rejects malformed flags and defaults to the compatible mode',async()=>{
+ const {normalizeCharacterCard}=await import('../lib/character/domain.js')
+ assert.equal(normalizeCharacterCard({enabled:true,roleText:'role'}).exclusivePrompt,undefined)
+ assert.equal(normalizeCharacterCard({enabled:true,roleText:'role',exclusivePrompt:true}).exclusivePrompt,true)
+ assert.throws(()=>normalizeCharacterCard({enabled:true,roleText:'role',exclusivePrompt:'true'}),/开关/)
 })

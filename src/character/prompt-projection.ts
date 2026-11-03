@@ -15,10 +15,11 @@ const protocols = new WeakMap<Agent, Map<string, string[]>>()
 
 /** Request-only projection. Never changes persisted history or registrations. */
 export function projectConversationPrompt(assembly: PromptAssembly, agent: Agent,
-  options: { roleEnabled: boolean; discovery: boolean }): PromptAssembly {
+  options: { roleEnabled: boolean; discovery: boolean; exclusive?: boolean }): PromptAssembly {
   const moved = new Map<string, string[]>()
   const visible = new Set(assembly.tools.map(tool => tool.name))
   const sections = assembly.sections.flatMap(section => {
+    if(options.roleEnabled && section.name==='harness:identity' && section.text.trim()==='You are an AI agent powered by DeepSeek Harness.')return []
     if (options.roleEnabled && section.name === 'deployment:persona-prefix'
       && /^You are a coding agent powered by the [^\r\n]+ model\.$/.test(section.text.trim())) {
       // Replace only the exact stock identity, never a user-edited preset.
@@ -34,8 +35,12 @@ export function projectConversationPrompt(assembly: PromptAssembly, agent: Agent
     for (const name of names) moved.set(name, [...(moved.get(name) ?? []), section.text])
     return []
   })
+  if(options.roleEnabled){
+    const identity=sections.findIndex(section=>section.name==='partner-identity')
+    if(identity>0)sections.unshift(...sections.splice(identity,1))
+  }
   protocols.set(agent, moved)
-  return { ...assembly, sections }
+  return { ...assembly, sections: options.roleEnabled&&options.exclusive ? sections.filter(section=>section.name==='partner-identity') : sections }
 }
 
 /** Only exposed after discovery has checked the tool's live access. */

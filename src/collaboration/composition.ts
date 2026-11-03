@@ -104,8 +104,7 @@ export class PartnerAgentComposition {
       disposers.push(ctx.systemPrompt.section({
         name:'partner-collaboration',order:-7,
         text:[companion.toolDiscovery ? TOOL_DISCOVERY_PROMPT : '伙伴能力通过当前工具调用。工作流程可用 partner_workflow 查询，Skill 使用 partner_skill 加载；权限以实际校验为准。',
-          '任务分流：用户要求实际查证、排障、寻找实现方案或重新核实旧结论时，先回应再直接调用 partner_work_execute，将调查过程留在独立工作上下文，事实结果返回后由原会话答复。不要把这种请求改答成通用知识或工具目录介绍。只问概念、仅查工具清单、普通聊天和一次轻量操作直接处理；已有看板任务或明确委派沿用原任务，不重复执行。',
-          '当前目录只代表已暴露的能力，不代表所有实现方案均已调查。区分未提供入口、尚未验证和实际失败；需要调查的请求应继续检索或验证。',
+          '需要实际调查、排障或较长执行时用 partner_work_execute，已有看板或委派沿用原任务；普通接话、概念讨论和轻量操作直接处理。操作流程在 describe 中按需读取，工具目录不代表已经完成调查。工作结果约束事实，回复语气仍由当前角色与关系决定。',
           companion.idleContact?.enabled ? '自主活动已开启。你可以按自己的意图继续行动，也可以结束；如想在本轮之后再继续，可按需查询 partner_thoughts，用 plan 留下下一步意图、会话和等待时间。没有安排就按空闲频率唤起，不因回复完成自动追加一轮。真实结果、用户新消息与停止要求优先；不必每轮计划或汇报计划。' : '',
           renderEnabledSkills(companion,enabledSkills),
           `当前伙伴 id：${companion.id}。授权伙伴目录通过 partner_collaborate directory 查询；流程说明通过 partner_tools describe 或 partner_workflow inspect 按需读取。`,

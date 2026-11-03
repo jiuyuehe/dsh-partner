@@ -1,5 +1,5 @@
 import { renderIdentityRelationship } from '../character/relationship-adapter.js'
-import { renderCharacterCore } from '../character/domain.js'
+import { renderCharacterCore, renderExclusiveIdentity } from '../character/domain.js'
 import { renderConversationBehavior } from '../character/conversation-behavior.js'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { AgentDefaultModelConfig } from '@deepseek-ai/dsh-agent-default-model'
@@ -7,6 +7,7 @@ import type { Companion } from '../domain.js'
 import { ATTACHMENT_PROTOCOL } from '../attachments/tool.js'
 
 export function renderPartnerPersona(companion: Companion, surface: 'conversation' | 'local' | 'heartbeat' | 'ephemeral' = 'conversation', includeRelationship = true): string {
+  if(companion.characterCard?.enabled&&companion.characterCard.exclusivePrompt&&(surface==='conversation'||surface==='local'))return [renderExclusiveIdentity({...companion,characterCard:companion.characterCard}),includeRelationship?renderIdentityRelationship(companion):''].filter(Boolean).join('\n\n')
   const capabilities = companion.capabilities.length > 0 ? companion.capabilities.join('、') : '由当前 Agent Preset 提供的基础能力'
   return [
     companion.characterCard?.enabled && (surface === 'conversation' || surface === 'local')

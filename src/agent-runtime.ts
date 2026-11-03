@@ -1,3 +1,4 @@
+import { normalizeBackgroundContext } from './character/background-context.js'
 import { activityPlanCurrent } from './character/activity-plan.js'
 import { renderThoughts } from './character/thoughts.js'
 import { renderPersonaParagraphs } from './persona/context.js'
@@ -206,12 +207,14 @@ export class PartnerAgentRuntime {
         // The host assembles the request before pre-step compaction checks.
         // Roll here too, so competing prepend listeners cannot summarize stale rounds first.
         context.signal.throwIfAborted()
+        if(this.configurations.forSession(context.agent.session.id))normalizeBackgroundContext(context.agent.session)
         const rollingMemory = this.configurations.forSession(context.agent.session.id)?.companion.automation.memory
         if (rollingMemory?.rollingContextEnabled) rollConversationContext(context.agent.session, rollingMemory)
         const enforce = (assembly: typeof _assembly) => {
           const configuration=this.configurations.forSession(context.agent!.session.id)
           const project = (value: typeof _assembly) => configuration ? projectConversationPrompt(projectAgreements(value,this.store.snapshot(),configuration.companion.id,context.agent!.session.id,this.inputEvents(context.agent!)), context.agent!, {
             roleEnabled: configuration.companion.characterCard?.enabled === true,
+            exclusive: configuration.companion.characterCard?.exclusivePrompt === true,
             discovery: configuration.companion.toolDiscovery === true,
           }) : value
           if (this.autonomousAssemblyContexts.has(context)) return project(assembly)
@@ -911,6 +914,7 @@ export class PartnerAgentRuntime {
         summary: '伙伴正在进行低打扰心跳检查',
       },
     }), { surfaceOp: 'append' })
+    normalizeBackgroundContext(conversation.session)
   }
 
   async resetCompanion(companionId: string): Promise<void> {
@@ -1712,6 +1716,8 @@ export function renderHeartbeatActivity(
 ): string {
   const status = execution.blocked?.length ? '检查受阻' : outcome === 'notified' ? '已通过微信提醒' : outcome === 'quiet' ? '检查完成，无需主动提醒' : '执行失败'
   const lines = [
+    '【系统后台关注检查记录 · 非用户发言】',
+    `记录时间：${new Date(execution.completedAt).toISOString()}；本次检查已结束，以下是当时结果，不表示当前正在执行。`,
     `状态：${status}`,
     `本轮挂念：${execution.concerns.map(item => item.subject).join('；')}`,
     `用时：${formatDuration(execution.completedAt - execution.startedAt)}`,
