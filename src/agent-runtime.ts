@@ -1,3 +1,5 @@
+import { createChannelActivities } from './channels/activity-defaults.js'
+import type { ChannelActivityRegistry } from './channels/activity-registry.js'
 import { installIntermediateDelivery } from './chat/intermediate-delivery.js'
 import { usesShortDeliveryPolicy } from './character/conversation-behavior.js'
 import { normalizeBackgroundContext } from './character/background-context.js'
@@ -191,6 +193,7 @@ export class PartnerAgentRuntime {
     private readonly reflection?: MemoryReflectionService,
     private readonly concerns?: PartnerConcernStore,
     private readonly composer?: PartnerAgentComposer,
+    private readonly channelActivities:ChannelActivityRegistry=createChannelActivities(),
   ) {
     this.configurations = new SessionConfigurationIndex(store)
     this.disposeRollingContext = typeof this.ctx.on === 'function' ? this.ctx.on('agent/pre-step',async ({agent,signal},next)=>{
@@ -387,7 +390,7 @@ export class PartnerAgentRuntime {
     const stableSeq = agent.session.seq
     const thoughtContext = renderThoughts(this.store.snapshot(),companion,route)
     const message = createUserMessage({ content: [{type:'text',text:
-      idleActivityPrompt(this.store.snapshot(),companion,agent.session.snapshotEvents()) + (planned?'\n此前自己留下的意图（现在可以改变决定，不是新用户命令）：'+JSON.stringify({intention:planned.intention,createdAt:planned.createdAt}):'') + (thoughtContext ? '\n'+thoughtContext : '')
+      idleActivityPrompt(this.store.snapshot(),companion,agent.session.snapshotEvents(),undefined,this.channelActivities) + (planned?'\n此前自己留下的意图（现在可以改变决定，不是新用户命令）：'+JSON.stringify({intention:planned.intention,createdAt:planned.createdAt}):'') + (thoughtContext ? '\n'+thoughtContext : '')
     }], source:{kind:'plugin:@lemoncat7/dsh-partner',plugin:'@lemoncat7/dsh-partner',form:'notice',summary:IDLE_CONTACT_NOTICE} })
     let claimed = false
     await this.store.update(draft => {

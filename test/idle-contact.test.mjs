@@ -45,13 +45,13 @@ test('autonomous decisions can resume without a new reply; no daily cap and cool
   state.sessions.pop();route.idleContactState.attemptedAt=now-59_000
   assert.equal(idleContactDue(state,companion,{...user,id:'new'},now,tz),false)
 })
-function runtimeFixture(){
+function runtimeFixture(activities){
   const {state,companion,route}=fixture();companion.idleContact.quietStartHour=0;companion.idleContact.quietEndHour=0
   const events=[{type:'user/message',seq:1,time:Date.now()-4*3600_000,data:{id:user.id,source:{kind:'user'}}}]
   const followed=[]
   const agent={status:'idle',session:{seq:1,snapshotEvents:()=>events},followup:m=>followed.push(m)}
   const store={subscribe:()=>()=>{},snapshot:()=>state,isCompanionRemoving:()=>false,update:async fn=>fn(state)}
-  const runtime=new PartnerAgentRuntime({agents:{get:()=>undefined}},store,'/tmp')
+  const runtime=new PartnerAgentRuntime({agents:{get:()=>undefined}},store,'/tmp',undefined,undefined,undefined,undefined,activities)
   runtime.ensureAgent=async()=>agent;runtime.isArchived=()=>false
   return {runtime,store,agent,events,followed,state,companion,route}
 }
@@ -62,10 +62,11 @@ test('idle capability hints include only enabled operations on this companion en
   state.channels.push(channel,{...channel,id:'foreign',companionId:'other'},{...channel,id:'disabled',enabled:false},{...channel,id:'off',qq:{...qq,autonomousActions:false}})
   const before=structuredClone(state)
   const hints=JSON.parse(idleActivityPrompt(state,companion).split('：').at(-1))
-  assert.deepEqual(hints,[{channelId:'qq',categories:[{id:'space',title:'QQ 空间'}],operations:['get_qzone_feeds','send_qzone_msg']}])
+  assert.deepEqual(hints.filter(h=>h.platform==='qq').map(h=>({channelId:h.channelId,operations:h.activities.flatMap(a=>a.operations??[])})),[{channelId:'qq',operations:['get_qzone_feeds','send_qzone_msg']}])
+  assert.equal(hints.find(h=>h.channelId==='ch').provider,'conversation')
   assert.deepEqual(state,before)
   channel.qq={...qq,enabledActions:[]}
-  assert.deepEqual(JSON.parse(idleActivityPrompt(state,companion).split('：').at(-1)),[])
+  assert.deepEqual(JSON.parse(idleActivityPrompt(state,companion).split('：').at(-1)).filter(h=>h.platform==='qq'),[])
 })
 test('autonomous followup carries current capability hints and reflects revocation next time',async()=>{
   const f=runtimeFixture()
@@ -78,7 +79,7 @@ test('autonomous followup carries current capability hints and reflects revocati
   delete f.route.idleActivityCheck;delete f.route.idleContactState
   await f.runtime.idleContact('c')
   assert.equal(f.followed.length,2)
-  assert.ok(f.followed[1].content[0].text.endsWith('[]'))
+  assert.doesNotMatch(f.followed[1].content[0].text,/send_qzone_msg/);assert.match(f.followed[1].content[0].text,/conversation/)
 })
 test('claims before followup; concurrent checks and restart cannot repeat an uncertain attempt',async()=>{
   const f=runtimeFixture()
@@ -339,4 +340,16 @@ test('autonomy discovers expandable abilities without a compulsory social output
  assert.match(prompt,/分享、发动态、发消息是活动中自然产生的选择/)
  assert.match(prompt,/用户的新消息优先/)
  assert.equal(JSON.stringify(state),before)
+})
+
+test('scheduler uses injected channel registry and picks up registration and removal between wakeups',async()=>{
+ const {ChannelActivityRegistry}=await import('../lib/channels/activity-registry.js')
+ const activities=new ChannelActivityRegistry(),f=runtimeFixture(activities)
+ f.state.channels[0].platform='matrix'
+ await f.runtime.idleContact('c');assert.ok(!f.followed[0].content[0].text.includes('matrix_feed'))
+ const dispose=activities.register({id:'matrix.feeds',platform:'matrix',discover:()=>[{id:'read',title:'浏览频道',tool:'matrix_feed',visibility:'public',description:'读取已授权频道内容'}]})
+ delete f.route.idleActivityCheck;delete f.route.idleContactState
+ await f.runtime.idleContact('c');assert.match(f.followed[1].content[0].text,/matrix_feed/)
+ dispose();delete f.route.idleActivityCheck;delete f.route.idleContactState
+ await f.runtime.idleContact('c');assert.ok(!f.followed[2].content[0].text.includes('matrix_feed'))
 })

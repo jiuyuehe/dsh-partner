@@ -1,3 +1,4 @@
+import { createChannelActivities } from './channels/activity-defaults.js'
 import { ThoughtService } from './character/thoughts.js'
 import { InteractionReviewService } from './character/interaction-review.js'
 import { agreementTool } from './chat/agreements.js'
@@ -159,7 +160,9 @@ export function apply(context: Context, config: PartnerConfig): void {
     const mcp = new McpService(store, new McpCredentials(ctx.credentials))
     composer.setMcpService(mcp)
     executor.setMcpTools(id => mcp.definitions(id))
-    const agents = new PartnerAgentRuntime(ctx, store, resolved.defaultCwd, memory, reflection, concerns, composer)
+    const channelActivities=createChannelActivities((provider,error)=>ctx.logger.warn(`dsh-partner activity provider ${provider}: ${String(error)}`))
+    ctx.provide('dshPartnerChannelActivities',channelActivities)
+    const agents = new PartnerAgentRuntime(ctx, store, resolved.defaultCwd, memory, reflection, concerns, composer,channelActivities)
     const sleep = new SleepService(ctx, store, memory, { busy: (id, exceptSessionId) => agents.companionActivity(id).some(a => a.kind !== 'memory' && a.kind !== 'observation' && (!exceptSessionId || a.sessionId !== exceptSessionId)), archived: id => ctx.workspaceRegistry.archivedSessionIds.includes(id as import('@deepseek-ai/dsh-session').SessionId) })
     agents.setSleepService(sleep)
     composer.setSleepToolFactory(id => sleep.tool(id))
