@@ -1,8 +1,8 @@
 import type { CharacterCard } from './domain.js'
 
-/** Exclusive persona owns expression, including task delivery style. */
+/** User-selected delivery size is independent of persona composition. */
 export function usesShortDeliveryPolicy(card?: CharacterCard): boolean {
-  return card?.length === 'short' && !card.exclusivePrompt
+  return card?.length === 'short'
 }
 
 /** Stable settings and delivery contracts; expression belongs to the configured persona. */
@@ -39,7 +39,7 @@ export function renderConversationTurn(card: CharacterCard | undefined, consecut
 export function renderChatDeliveryGuidance(card?: CharacterCard): string {
   if (!card?.enabled || (!card.segmentedReplies && !card.stickersEnabled)) return ''
   return [
-    '【聊天投递】直接回答可用 partner_chat_reply 结束本轮；文字写入 messages 的 text 条目，图片表情写独立 stickerId 条目，不把配文留在工具外。想先说一句再继续时可用 partner_chat_say，确认送达后不重复；已送达且无需补充时可用 partner_chat_reply messages:[] 结束。任务仍按任务回应流程执行。',
+    '【聊天投递】直接回答可用 partner_chat_reply 结束本轮；文字写入 messages 的 text 条目，图片表情写独立 stickerId 条目，不把配文留在工具外。想先说一句再继续时可用 partner_chat_say；中途文字或表情可用 partner_chat_reply continueTurn:true，确认送达后继续执行、不重复；已送达且无需补充时可用 partner_chat_reply messages:[] 结束。任务仍按任务回应流程执行。',
     card.segmentedReplies
       ? '分段回复已开启：messages 的每个 text 条目是一条独立消息；换行不等于独立投递。条数由回复内容决定，无最低条数要求。'
       : '分段回复未开启：文字只用一条，表情可独立一条。',
@@ -57,9 +57,10 @@ export function renderTaskConversationGuidance(): string {
 
 /** Delivery policy, not a replacement persona. Explicit requests override defaults. */
 export function renderReplyRhythm(card?: CharacterCard): string {
-  if (card?.exclusivePrompt) return '工作记录是事实资料，不是回复范文。由当前角色结合原对话决定回应、篇幅与是否需要附件；未验证和失败不能说成成功，附件送达以实际回执为准。'
-  const common = '措辞按原人格；本轮明确要求详细解释、原文或不要附件时优先照做。简单结果直接说，事实和未完成事项完整保留在交付内容中。附件成功以工具回执为准，发送失败说明情况，不宣称已交付。'
-  if (card?.length === 'short') return '篇幅偏好：简短。执行前按人格用半句或一句只说接下来做什么，不展开计划。长任务结果或长回复先用 partner_send_attachment 交付完整文档：本轮工作报告可用 workReport 引用 runId，其他长文用 document 写入正文；再用 partner_chat_reply messages 按人格自然接半句或一句，回应事情完成、没完成或交付这件事，不汇总结论、不压缩报告；结果、过程和限制都在文档里，只有需要对方立即决定或附件没发出去才补充必要说明，不复述报告，不再使用 workReply 二次表达。简单工具结果不强制发文件。' + common
-  if (card?.length === 'rich') return '篇幅偏好：丰富。执行前说明动作及必要步骤；结果在正文按话题展开理由、过程和限制，代码、大表格或完整报告用附件补充，不重复整份附件。' + common
-  return '篇幅偏好：自然。执行前简单说明动作，必要时交代目的；结果正文说主要结论和必要限制，细节较多时用附件补充，按问题决定展开程度。' + common
+  return [
+    '一轮可以有多个执行目标。过程中可用 partner_chat_say 接话，或 partner_chat_reply continueTurn:true 穿插文字、表情，随后继续执行；没有新话不必播报。',
+    '长任务的过程、结论、未确认事项和依据用 partner_send_attachment 交付报告；workReport 可合并本轮多个 runId，name 按实际主题命名，例如“视频接口核验.md”；不要固定叫工作结果。其他长文可用 document。',
+    usesShortDeliveryPolicy(card) ? '短句已开启：日常聊天正文一轮最终提交最多 180 字，多个意思按自然停顿分别写进 messages；详细结果放报告，不截断、不为分段凑话。用户明确要展开或附件失败时可用 inlineDetails 正文交付。' : '',
+    '报告确认送达后仍要收尾。所有开场、穿插和收尾都依据当前人物及关系设定，自行决定说什么，不复读整份报告，不套用汇报或回执话术；未知和失败按事实说明。',
+  ].filter(Boolean).join('\n')
 }

@@ -1,4 +1,4 @@
-import { renderReplyRhythm, usesShortDeliveryPolicy } from '../character/conversation-behavior.js'
+import { renderReplyRhythm } from '../character/conversation-behavior.js'
 import { randomUUID } from 'node:crypto'
 import type { ToolDefinition, ToolRuntime, ToolRunContext, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import { scopeTarget } from '@deepseek-ai/dsh-scope'
@@ -117,7 +117,9 @@ export function workExecutionTool(owner:string,store:PartnerStore,executor:Ephem
     systemInstruction:'你是同一伙伴的一次独立工作上下文，负责本次目标的实际执行，不负责向用户聊天。只通过 partner_work_tools 使用原会话已授权工具，不能绕过审批、身份或撤权。工作流程和 Skill 先查询、读取再执行；已分派任务沿用其身份和范围，不重复创建。目录只说明入口；调查实现方案需要实际检索或验证。完成或受阻后必须调用 partner_work_result，事实、未知、证据和产物分别记录。不要改变人格、关系或睡眠，不直接向用户发送聊天。没有工具执行依据不得声称完成。',
    })
    guard()
-   return JSON.stringify({runId:result.run.id,...JSON.parse(result.output),next:(usesShortDeliveryPolicy(guard().characterCard)&&JSON.stringify(final).length>1200?'本轮为长报告，下一步先调用 partner_send_attachment workReport.runIds='+JSON.stringify([result.run.id])+'，确认交付后直接 messages 按人格自然接半句或一句，回应完成、未完成或交付这件事，不汇总结果；结果、过程和限制都在附件里，只有需要对方立即决定或附件失败才补充说明。\n':'')+renderReplyRhythm(guard().characterCard)+(guard().characterCard?.exclusivePrompt?'\n工作上下文已结束。在原对话直接用 partner_chat_reply messages 回复，保留当前角色；按真实结果继续，工具目录不等于已执行验证。':'\n工作上下文已结束。短句模式按上述规则交付文档并直接 messages 简短回应。其他节奏可使用 partner_chat_reply 的 workReply：purpose 只写当前回应目的（不写成稿、工作细节或回复提纲），results 引用本轮 runId 与 facts/unknowns/evidence/artifacts 数组从 0 开始的下标，不同时写 messages 文字；只选择相关事实，未解决限制会保留。用户换话题时直接使用 messages 按人格回应，不强制汇报工作。依据结果、实际证据与原对话继续答复；未知仍是未知，工具目录不等于方案调查。交付物使用原会话的附件工具投递，已确认送达的不重复发送。')})
+   return JSON.stringify({runId:result.run.id,...JSON.parse(result.output),next:
+    (JSON.stringify(final).length>1200?'本轮详细工作记录需要报告交付，可与本轮其他目标合并；使用 partner_send_attachment workReport.runIds='+JSON.stringify([result.run.id])+'，并提供有实际主题的 name。\n':'')+
+    renderReplyRhythm(guard().characterCard)+'\n工作上下文已结束，原会话继续处理其他目标或按人格收尾。工作记录只是事实资料，不是说话范文；工具目录不等于验证成功。'})
    } finally {unsubscribe?.()}
   },
  }

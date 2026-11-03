@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto'
+import { deliverIntermediate } from './intermediate-delivery.js'
 import { usesShortDeliveryPolicy } from '../character/conversation-behavior.js'
 import { pendingActions, pendingActionNotice, validateTaskStop } from './action-obligation.js'
 import { hasTaskPreamble } from '../execution/task-preamble.js'
@@ -65,8 +67,8 @@ export function chatTools(owner:string, store:PartnerStore, library:StickerLibra
       return {content:[{type:'text',text:JSON.stringify(item)},{type:'image',attachment}]}
     },
   },{
-    name:'partner_chat_reply',description:`提交本轮最终聊天回复并结束回合。本轮已用 partner_chat_say 送达普通接话或结果对白且没有新话时可提交 messages:[] 结束，不重复已说内容；仅任务前动作告知不能代替结果答复。自主群聊确实无需接话时可提交 messages:[] 安静结束，不发送旁听提示；明确呼唤和正常接续优先回应。其他场景 messages 是按顺序展示/发送的 1–8 条消息，每条只含 text 或 stickerId；开启分段时按自然语意与停顿使用多个 text 条目，同一话题也可分条；一句短话保持一条，不为凑段数增加内容。每个 text 是一条消息；开启分段时单个短聊天 text 内的换行会兜底分条，代码、列表与长文保持完整；分段关闭时文字只用一条，最多两张库内表情。先完成所有必要工作，再调用本工具；不要同时安排其他工具，直接回复时所有要说的文字都放在 messages 的 text 条目中，表情放在独立的 stickerId 条目；生成图片和文件先用 partner_send_attachment 真实交付，text 不得代发本地 Markdown 图片地址；不要把文字放在工具外、只在 messages 里提交表情。不在调用前后重复相同文字。messages 是你直接按人格写出的回复，原样使用，不会自动改写。普通接话按当前人格自然表达，不为了凑段数额外补话。独占系统提示开启时，正文表达与附件选择由角色设定和本轮要求决定，直接使用 messages，不使用 workReply 二次表达。仅普通组合模式的短句交付策略要求长报告先交付文档、正文最多 180 字；明确的本轮展开要求或附件失败回退使用 inlineDetails。普通组合模式需要答复本轮工作结果时也可使用 workReply 交接：只写当前回应目的（不列提纲或复述工作细节），并引用本轮真实 runId 的数组下标，不先写成稿；此时 messages 只能附带表情。用户换话题可直接 messages 回应，不强制交接工作。未知和失败不会因未选下标而消失。无需分段的长文/代码可用普通最终回复。适用于直接对话或系统明确发起的闲时联系，不用于内部任务或心跳。表情先调用 partner_stickers 查询当前渠道的库，优先选择结果中的渠道原生表情；QQ 渠道库优先挑已收藏表情；只用当前查询返回的 ID，没有贴切结果可去掉 query 浏览，仍不合适就只发文字，不强行每轮发表情，不自行换成内置库。`,
-    parameters:{type:'object',properties:{taskEvidence:{type:'object',additionalProperties:false,required:['kind'],properties:{kind:{type:'string',enum:['not_executed','tool_error'],description:'未调用或模型自己不能执行用 not_executed，不能说成外部服务拒绝；真实工具失败用 tool_error。'},callId:{type:'string',maxLength:300},excerpt:{type:'string',maxLength:500,description:'实际工具错误返回的原文片段，必须与 callId 对应。'}},description:'taskDisposition=blocked 时必填，区分未执行与有证据的工具失败；不得虚构回执。'},taskDisposition:{type:'string',enum:['blocked'],description:'本轮已告知的动作无法继续（取消、权限或条件限制）时明确结束，不能声称完成。'},taskReason:{type:'string',minLength:1,maxLength:300,description:'未执行动作的具体原因；同时在 messages 按人格说明未完成。'},inlineDetails:{type:'boolean',description:'仅当用户本轮明确要求详细、原文、不要附件，或附件能力不可用/投递失败而必须在正文交付时设为 true；短句模式普通长回复应先交付文档，不用此字段绕过节奏。'},workReply:WORK_REPLY_SCHEMA,preserveText:{type:'boolean',description:'用户要求原文、逐字引用或固定文本时为 true；不用于省略工作。'},messages:{type:'array',minItems:0,maxItems:8,items:{type:'object',properties:{text:{type:'string',maxLength:6000},stickerId:{type:'string'}},additionalProperties:false}}},additionalProperties:false},
+    name:'partner_chat_reply',description:`提交聊天消息，默认作为最终收尾并结束回合。执行多个目标期间可设 continueTurn:true，立即发送这些文字或表情后继续工作，不结束回合；没有新话无需调用。本轮已用 partner_chat_say 送达普通接话或结果对白且没有新话时可提交 messages:[] 结束，不重复已说内容；仅任务前动作告知不能代替结果答复。自主群聊确实无需接话时可提交 messages:[] 安静结束，不发送旁听提示；明确呼唤和正常接续优先回应。其他场景 messages 是按顺序展示/发送的 1–8 条消息，每条只含 text 或 stickerId；开启分段时按自然语意与停顿使用多个 text 条目，同一话题也可分条；一句短话保持一条，不为凑段数增加内容。每个 text 是一条消息；开启分段时单个短聊天 text 内的换行会兜底分条，代码、列表与长文保持完整；分段关闭时文字只用一条，最多两张库内表情。最终收尾前先完成所有必要工作；中途消息确认送达后再继续执行，不与发送并行安排其他工具，直接回复时所有要说的文字都放在 messages 的 text 条目中，表情放在独立的 stickerId 条目；生成图片和文件先用 partner_send_attachment 真实交付，text 不得代发本地 Markdown 图片地址；不要把文字放在工具外、只在 messages 里提交表情。不在调用前后重复相同文字。messages 是你直接按人格写出的回复，原样使用，不会自动改写。普通接话按当前人格自然表达，不为了凑段数额外补话。所有消息依据人物和关系设定直接写入 messages。长任务过程和结论先用有具体主题文件名的报告交付，再按人格收尾；中途接话不要求先交报告。短句设置对独占人格也有效，聊天正文最多 180 字，多个意思分成多个 text 条目，不强制条数、不截断。明确要求详细或附件失败回退用 inlineDetails。普通组合模式可选 workReply 交接：只写当前回应目的（不列提纲或复述工作细节），并引用本轮真实 runId 的数组下标，不先写成稿；此时 messages 只能附带表情。用户换话题可直接 messages 回应，不强制交接工作。未知和失败不会因未选下标而消失。无需分段的长文/代码可用普通最终回复。适用于直接对话或系统明确发起的闲时联系，不用于内部任务或心跳。表情先调用 partner_stickers 查询当前渠道的库，优先选择结果中的渠道原生表情；QQ 渠道库优先挑已收藏表情；只用当前查询返回的 ID，没有贴切结果可去掉 query 浏览，仍不合适就只发文字，不强行每轮发表情，不自行换成内置库。`,
+    parameters:{type:'object',properties:{continueTurn:{type:'boolean',description:'true：立即发送中途文字或表情，然后继续当前回合；默认 false：最终收尾。'},taskEvidence:{type:'object',additionalProperties:false,required:['kind'],properties:{kind:{type:'string',enum:['not_executed','tool_error'],description:'未调用或模型自己不能执行用 not_executed，不能说成外部服务拒绝；真实工具失败用 tool_error。'},callId:{type:'string',maxLength:300},excerpt:{type:'string',maxLength:500,description:'实际工具错误返回的原文片段，必须与 callId 对应。'}},description:'taskDisposition=blocked 时必填，区分未执行与有证据的工具失败；不得虚构回执。'},taskDisposition:{type:'string',enum:['blocked'],description:'本轮已告知的动作无法继续（取消、权限或条件限制）时明确结束，不能声称完成。'},taskReason:{type:'string',minLength:1,maxLength:300,description:'未执行动作的具体原因；同时在 messages 按人格说明未完成。'},inlineDetails:{type:'boolean',description:'仅当用户本轮明确要求详细、原文、不要附件，或附件能力不可用/投递失败而必须在正文交付时设为 true；短句模式普通长回复应先交付文档，不用此字段绕过节奏。'},workReply:WORK_REPLY_SCHEMA,preserveText:{type:'boolean',description:'用户要求原文、逐字引用或固定文本时为 true；不用于省略工作。'},messages:{type:'array',minItems:0,maxItems:8,items:{type:'object',properties:{text:{type:'string',maxLength:6000},stickerId:{type:'string'}},additionalProperties:false}}},additionalProperties:false},
     output:{schema:{type:'object'},render:(_args,value)=>[{type:'text',text:(value as unknown as {parts:ChatPart[]}).parts.map(p=>p.type==='text'?p.text:`[表情：${p.type==='emoji'?p.emoji.label:p.label}]`).join('\n\n')}],presentationMeta:(_args,value)=>value},
     presentCall:()=>({card:'generic',title:'回复'}),
     async execute(raw,exec){
@@ -79,8 +81,9 @@ export function chatTools(owner:string, store:PartnerStore, library:StickerLibra
       const currentStart=[...events].reverse().find(e=>e.type==='turn/start')?.seq??0
       const origin=[...events].reverse().find(e=>e.seq>currentStart&&e.type==='user/message'&&!isRequirementDeliveryReceipt(e)&&(e.data.source.kind==='user'||isInternalTaskNotice(e)||isIdleContactNotice(e)))
       if(!origin||isInternalTaskNotice(origin))throw new Error('内部任务或自动执行不能用聊天回复结束；请按原任务协议交付')
-      let shortWorkDelivered = false
-      if (usesShortDeliveryPolicy(card) && (raw as {inlineDetails?: boolean}).inlineDetails !== true) {
+      const continuing=(raw as {continueTurn?:boolean}).continueTurn===true
+      if(continuing&&((raw as {workReply?:unknown}).workReply!==undefined||(raw as {taskDisposition?:unknown}).taskDisposition!==undefined))throw Error('中途接话使用 messages，不提交工作交接或任务结束状态')
+      if (!continuing && (raw as {inlineDetails?: boolean}).inlineDetails !== true) {
         const reports = workExpressionEvidence(events, currentStart).reports
         const longRuns = reports.filter(r => JSON.stringify(r).length > 1200).map(r => r.runId)
         const delivered = new Set<string>()
@@ -99,16 +102,15 @@ export function chatTools(owner:string, store:PartnerStore, library:StickerLibra
             } catch { /* Not an attachment receipt. */ }
           }
         }
-        if (longRuns.some(id => !delivered.has(id))) throw Error('短句接话：本轮长任务报告尚未交付，聊天未发送、未结束。先调用 partner_send_attachment workReport.runIds=' + JSON.stringify(longRuns.filter(id=>!delivered.has(id))) + ' 保存并交付完整记录，再用 messages 按人格自然接半句或一句，不汇总结果。用户本轮明确要求不要附件或附件失败时用 inlineDetails:true 正文交付。')
-        shortWorkDelivered = longRuns.length > 0
+        if (longRuns.some(id => !delivered.has(id))) throw Error('短句接话：本轮长任务报告尚未交付，最终聊天未发送、未结束。先调用 partner_send_attachment workReport.runIds=' + JSON.stringify(longRuns.filter(id=>!delivered.has(id))) + '，name 填任务主题文件名，保存并交付完整记录，再用 messages 按人物设定收尾，可自然分条。用户本轮明确要求不要附件或附件失败时用 inlineDetails:true 正文交付。')
       }
       const disposition=raw as {taskDisposition?:string;taskReason?:string;taskEvidence?:unknown;messages?:{text?:string}[]}
       const missing=pendingActions(events)
       if(disposition.taskDisposition==='blocked'&&(!disposition.taskReason?.trim()||!disposition.messages?.some(p=>p.text?.trim())))throw Error('无法继续时需 taskReason 具体原因和 messages 中对用户的说明，不能静默结束或声称完成。')
       const stopEvidence=disposition.taskDisposition==='blocked'?validateTaskStop(events,disposition.taskEvidence):undefined
-      if(missing.length&&disposition.taskDisposition!=='blocked')throw Error(pendingActionNotice(missing))
+      if(!continuing&&missing.length&&disposition.taskDisposition!=='blocked')throw Error(pendingActionNotice(missing))
       const messages=(raw as {messages?:unknown})?.messages
-      if((raw as {workReply?:unknown}).workReply===undefined&&Array.isArray(messages)&&messages.length===0){
+      if(!continuing&&(raw as {workReply?:unknown}).workReply===undefined&&Array.isArray(messages)&&messages.length===0){
         const audience=questionOrigin(agent.session.id,events,state.sessions)
         if(hasCurrentSpeech(events)&&audience){exec.signal.throwIfAborted();exec.concludeTurn();return {kind:'partner-chat-v1',parts:[],delivered:true,deliveryKind:'text',originRouteId:audience.id}}
         if(hasTaskPreamble(events))throw Error('当前只完成了任务前动作告知，不能用空消息结束。若工作尚未执行，继续调用实际工具；若已有结果，交付或按事实答复。不要重复动作告知，也不要把本提示当成回复正文。')
@@ -122,11 +124,9 @@ export function chatTools(owner:string, store:PartnerStore, library:StickerLibra
       const original=selection===undefined?withChatCompanionText(parseChatInput(raw),events,exec.rootCallId??exec.callId):messages===undefined||Array.isArray(messages)&&messages.length===0?[]:parseChatInput(raw)
       const authored=await composeWorkExpression(ctx,owner,store,exec,original,selection)
       if (usesShortDeliveryPolicy(card) && (raw as {inlineDetails?: boolean}).inlineDetails !== true && authored.parts.reduce((n,p)=>n+('text' in p?p.text.length:0),0) > 180) {
-        throw Error('短句接话：本次正文超过 180 字，尚未发送或结束回合。不要截断内容；先调用 partner_send_attachment，以 workReport.runIds 交付本轮完整工作记录，或 document.name/content 保存长文，再用 messages 按人格自然接半句或一句，不汇总结果，不重复报告。若用户明确要求详细/原文/不要附件，或附件不可用/发送失败需要正文交付，使用 inlineDetails:true。')
+        throw Error('短句接话：本次正文超过 180 字，尚未发送或结束回合。不要截断内容；先调用 partner_send_attachment，以 workReport.runIds 交付本轮完整工作记录，或 document.name/content 保存长文，再用 messages 按人物设定接话，可按自然停顿分条。若用户明确要求详细/原文/不要附件，或附件不可用/发送失败需要正文交付，使用 inlineDetails:true。')
       }
       for (const part of authored.parts) if ('text' in part) assertChatImageDelivery(part.text)
-      const textParts = authored.parts.filter(p=>'text'in p)
-      if (shortWorkDelivered && (textParts.length > 1 || textParts.some(p=>'text'in p && /[\r\n]/.test(p.text)))) throw Error('完整报告已经交付。短句接话的工作结果请用 messages 一条不换行的自然接话，回应完成、未完成或交付这件事，不汇总结论。结果、过程和限制已经在附件里，只有需要对方立即决定或附件失败才补充必要说明。不截断旧文，请重新按人格说一句。用户明确要展开时使用 inlineDetails:true。')
       const input=segmentChatInput(authored.parts,Boolean(card.segmentedReplies))
       if(!card.segmentedReplies && input.filter(p=>'text'in p).length>1)throw new Error('分段回复未开启，请使用一条文字')
       if(!card.segmentedReplies&&!card.stickersEnabled)throw new Error('分段回复和表情包均未开启，请直接回复')
@@ -151,6 +151,15 @@ export function chatTools(owner:string, store:PartnerStore, library:StickerLibra
       if((input.some(p=>'stickerId'in p)&&!latest.stickersEnabled)||(input.filter(p=>'text'in p).length>1&&!latest.segmentedReplies))throw new Error('聊天方式已变更，请按新设置回复')
       exec.signal.throwIfAborted()
       authored.validate?.()
+      if(continuing){
+        const originRouteId=questionOrigin(agent.session.id,events,state.sessions)?.id
+        if(!originRouteId||origin.type!=='user/message'||origin.data.source.kind!=='user')throw Error('中途消息需要当前用户会话来源')
+        const currentInput=[...agent.session.snapshotEvents()].reverse().find(e=>e.type==='user/message'&&e.data.source.kind==='user')
+        if(currentInput?.type!=='user/message'||currentInput.data.id!==origin.data.id)throw Error('输入已变化，旧中途消息未发送，请先处理新输入')
+        const receipt='intermediate:'+createHash('sha256').update(JSON.stringify([agent.session.id,origin.data.id,parts])).digest('hex')
+        await deliverIntermediate(agent,parts,originRouteId,receipt)
+        return {kind:'partner-chat-v1',parts,intermediate:true,delivered:true,inputMessageId:origin.data.id,originRouteId}
+      }
       exec.concludeTurn()
       return {kind:'partner-chat-v1',parts,...(disposition.taskDisposition==='blocked'?{taskDisposition:'blocked',taskEvidence:stopEvidence}:{}),originRouteId:questionOrigin(agent.session.id,events,state.sessions)?.id??null,...(authored.audit?{workExpression:authored.audit}:{})}
     },

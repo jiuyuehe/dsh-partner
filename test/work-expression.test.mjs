@@ -1,3 +1,4 @@
+import {installIntermediateDelivery} from '../lib/chat/intermediate-delivery.js'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {composeWorkExpression,workExpressionEvidence,confirmedProgress} from '../lib/chat/work-expression.js'
@@ -231,7 +232,6 @@ test('short long-work delivery requires a successful trusted receipt and keeps f
  f.events.push({seq:6,type:'tool/call',data:{callId:'file',name:'partner_send_attachment'}},{seq:7,type:'tool/result',data:{message:{toolCallId:'file',content:[{type:'text',text:JSON.stringify({conversation:'attachment_recorded',deliveryId:'doc',channel:'failed',reportRunIds:['run-real']})}]}}})
  await assert.rejects(tool.execute(args,f.exec),/长任务报告尚未交付/)
  f.events.push({seq:8,type:'tool/call',data:{callId:'retry',name:'partner_send_attachment'}},{seq:9,type:'tool/result',data:{message:{toolCallId:'retry',content:[{type:'text',text:JSON.stringify({conversation:'attachment_recorded',deliveryId:'doc',channel:'sent'})}]}}})
- await assert.rejects(tool.execute({messages:[{text:'报告已发送\n还有一些解释'}]},f.exec),/一条不换行/)
  assert.equal((await tool.execute(args,f.exec)).parts[0].text,args.messages[0].text)
  assert.equal(f.calls(),0);assert.equal(f.concluded(),1)
 })
@@ -246,22 +246,67 @@ test('an intermediate chat receipt cannot silently bypass undelivered long work'
  assert.equal(f.concluded(),0)
 })
 
-test('exclusive persona answers long work directly without forced attachment, line count or rewrite',async()=>{
+test('exclusive persona keeps short delivery and report requirements, permits authored multiple closing parts',async()=>{
  const f=fixture();Object.assign(f.c.characterCard,{length:'short',exclusivePrompt:true})
  const long=structuredClone(report);long.result.evidence=['内部核验记录。'.repeat(300)]
  f.events[4].data.message.content[0].text=JSON.stringify(long)
- const before=JSON.stringify(f.events),tool=chatTools('c',f.store,{}, {},f.ctx,'/local')[1]
- const messages=[{text:'找到啦，不过视频还没验证。'},{text:'必要的原文依据。'.repeat(25)}]
+ const tool=chatTools('c',f.store,{}, {},f.ctx,'/local')[1]
+ await assert.rejects(tool.execute({messages:[{text:'查到了'}]},f.exec),/长任务报告尚未交付/)
+ f.events.push({seq:6,type:'tool/call',data:{callId:'file',name:'partner_send_attachment'}},{seq:7,type:'tool/result',data:{message:{toolCallId:'file',content:[{type:'text',text:JSON.stringify({conversation:'attachment_recorded',deliveryId:'doc',channel:'sent',reportRunIds:['run-real']})}]}}})
+ await assert.rejects(tool.execute({messages:[{text:'长正文'.repeat(80)}]},f.exec),/超过 180/)
+ const messages=[{text:'找到啦'},{text:'不过视频还没验证'}]
  const out=await tool.execute({messages},f.exec)
  assert.deepEqual(out.parts,messages.map(p=>({type:'text',...p})))
- assert.equal(f.calls(),0);assert.equal(f.concluded(),1);assert.equal(JSON.stringify(f.events),before)
- // Turning off exclusive restores the existing optional short-delivery policy immediately.
- f.c.characterCard.exclusivePrompt=false
- await assert.rejects(tool.execute({messages},f.exec),/长任务报告尚未交付/)
+ assert.equal(f.calls(),0);assert.equal(f.concluded(),1)
+})
+
+test('intermediate text is delivered before a report without ending the turn; final still requires report',async()=>{
+ const f=fixture();f.c.characterCard.length='short'
+ const long=structuredClone(report);long.result.evidence=['完整依据。'.repeat(300)];f.events[4].data.message.content[0].text=JSON.stringify(long)
+ Object.assign(f.state.sessions[0],{kind:'channel',inboundMessageIds:['u']})
+ const sent=[],detach=installIntermediateDelivery(f.exec.agent,async(parts,route,receipt)=>sent.push({parts,route,receipt}))
+ const tool=chatTools('c',f.store,{}, {},f.ctx,'/local')[1]
+ try {
+  const out=await tool.execute({continueTurn:true,messages:[{text:'有点眉目了'},{text:'我再试一个地方'}]},f.exec)
+  assert.equal(out.intermediate,true);assert.equal(out.delivered,true);assert.equal(sent.length,1);assert.equal(sent[0].route,'r');assert.equal(f.concluded(),0)
+  await assert.rejects(tool.execute({messages:[{text:'完成啦'}]},f.exec),/长任务报告尚未交付/)
+ } finally {detach()}
+ await assert.rejects(tool.execute({continueTurn:true,messages:[{text:'继续'}]},f.exec),/不支持中途/)
+ assert.equal(f.concluded(),0)
+})
+
+test('failed intermediate send never claims delivery or ends the task',async()=>{
+ const f=fixture();Object.assign(f.state.sessions[0],{kind:'channel',inboundMessageIds:['u']});const detach=installIntermediateDelivery(f.exec.agent,async()=>{throw Error('发送状态未知')})
+ try {await assert.rejects(chatTools('c',f.store,{}, {},f.ctx,'/local')[1].execute({continueTurn:true,messages:[{text:'再试试'}]},f.exec),/发送状态未知/);assert.equal(f.concluded(),0)}finally{detach()}
 })
 
 test('exclusive persona rejects optional second-model work expression without sending',async()=>{
  const f=fixture();f.c.characterCard.exclusivePrompt=true
  await assert.rejects(f.run(),/原对话直接使用 messages/)
  assert.equal(f.calls(),0);assert.equal(f.concluded(),0)
+})
+
+test('intermediate QQ sticker preserves text, stays out of final replay and does not conclude',async()=>{
+ const f=fixture();Object.assign(f.state.sessions[0],{kind:'channel',inboundMessageIds:['u']})
+ const native={provider:'qq',id:'14',channelId:'qq',accountId:'12345678',label:'微笑'}
+ const adapters={forRoute:()=>({resolve:async()=>({native})})},sent=[]
+ const detach=installIntermediateDelivery(f.exec.agent,async(parts)=>sent.push(parts))
+ try {
+  const tool=chatTools('c',f.store,{}, {},f.ctx,'/local',adapters)[1]
+  const out=await tool.execute({continueTurn:true,messages:[{text:'嘿，有眉目了'},{stickerId:'qq-face-14'}]},f.exec)
+  assert.deepEqual(sent[0].map(p=>p.type),['text','emoji']);assert.equal(f.concluded(),0)
+  const final=await tool.execute({messages:[{text:'好了，给你看看'}]},f.exec)
+  const projected=channelReplyPartsAfter([...f.events,{seq:6,type:'tool/result',data:{message:{content:[]},meta:out}},{seq:7,type:'tool/result',data:{message:{content:[]},meta:final}},{seq:8,type:'turn/end',data:{reason:{kind:'completed'}}}],0)
+  assert.deepEqual(projected.chatParts,[{type:'text',text:'好了，给你看看'}]);assert.equal(f.concluded(),1)
+ }finally{detach()}
+})
+
+test('new input during sticker resolution cancels the old intermediate message',async()=>{
+ const f=fixture();Object.assign(f.state.sessions[0],{kind:'channel',inboundMessageIds:['u','new-input']})
+ const adapters={forRoute:()=>({resolve:async()=>{
+  f.events.push({seq:6,type:'user/message',data:{id:'new-input',source:{kind:'user'},content:[{type:'text',text:'等等'}]}})
+  return {native:{provider:'qq',id:'14',channelId:'qq',accountId:'12345678',label:'微笑'}}
+ }})}
+ const detach=installIntermediateDelivery(f.exec.agent,async()=>assert.fail('stale message must not send'))
+ try {await assert.rejects(chatTools('c',f.store,{}, {},f.ctx,'/local',adapters)[1].execute({continueTurn:true,messages:[{stickerId:'qq-face-14'}]},f.exec),/输入已变化/);assert.equal(f.concluded(),0)}finally{detach()}
 })

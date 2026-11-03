@@ -53,7 +53,7 @@ test('work keeps tool trace separate and executes in original permission scope, 
  assert.equal(output.isError,false);assert.equal(invokedAgent,f.agent)
  const parsed=JSON.parse(output.value);assert.equal(parsed.result.status,'completed');assert.deepEqual(parsed.result.artifacts,result.artifacts)
  assert.equal(parsed.execution.catalogueOnly,false)
- assert.match(parsed.next,/partner_send_attachment/);assert.match(parsed.next,/不汇总/)
+ assert.match(parsed.next,/partner_send_attachment/);assert.match(parsed.next,/人物/)
  assert.equal(f.agent.session.snapshotEvents().some(e=>e.type==='tool/ptc-dispatch'),false)
  assert.equal(f.child().session.snapshotEvents().some(e=>e.type==='tool/ptc-dispatch'&&e.data.name==='web_read'),true)
  assert.equal(f.subscriptions(),0)
@@ -155,7 +155,7 @@ test('direct work entry still requires the same persona preamble and permissions
  assert.equal(output.isError,false);assert.equal(sent,1);assert.equal(f.requests(),1)
 })
 
-test('exclusive persona work result retains evidence but injects no short report workflow',async t=>{
+test('exclusive persona preserves named report workflow without prescribing closing grammar',async t=>{
  const f=fixture(t);f.c.characterCard={enabled:true,length:'short',exclusivePrompt:true}
  const long={...result,evidence:['已读取的核验依据。'.repeat(160)]}
  f.scope.ctx.tools.register(tool('web_read'))
@@ -164,7 +164,7 @@ test('exclusive persona work result retains evidence but injects no short report
  assert.equal(output.isError,false)
  const parsed=JSON.parse(output.value)
  assert.deepEqual(parsed.result,long)
- assert.doesNotMatch(parsed.next,/半句|不汇总|180|下一步先调用|workReply/)
- assert.match(parsed.next,/原对话直接用 partner_chat_reply messages/)
- assert.match(parsed.next,/未验证和失败不能说成成功/)
+ assert.doesNotMatch(parsed.next,/半句|不汇总|workReply/)
+ assert.match(parsed.next,/name/);assert.match(parsed.next,/180/)
+ assert.match(parsed.next,/未知和失败按事实说明/)
 })

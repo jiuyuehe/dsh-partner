@@ -1,3 +1,4 @@
+import { installIntermediateDelivery } from './chat/intermediate-delivery.js'
 import { usesShortDeliveryPolicy } from './character/conversation-behavior.js'
 import { normalizeBackgroundContext } from './character/background-context.js'
 import { activityPlanCurrent } from './character/activity-plan.js'
@@ -1229,6 +1230,10 @@ export class PartnerAgentRuntime {
       const stage=replyStage(event);if(stage)reportProgress(progress,stage)
       if(directProgress){const activity=replyActivity(event);if(activity)reportProgress(progress,activity)}
     })
+    const detachIntermediate=progress?.sendChat ? installIntermediateDelivery(agent,async(parts,routeId,receipt)=>{
+      if(questionOrigin(agent.session.id,agent.session.snapshotEvents(),this.store.snapshot().sessions)?.id!==session.id||routeId!==session.id)throw Error('回复对象已变化，中途消息未发送')
+      await progress.sendChat!(parts,routeId,receipt)
+    }) : undefined
     const detachPreamble=progress?.acknowledge ? installTaskPreamble(agent,progress.acknowledge,()=>questionOrigin(agent.session.id,agent.session.snapshotEvents(),this.store.snapshot().sessions)?.id===session.id,()=>usesShortDeliveryPolicy(this.store.snapshot().companions.find(c=>c.id===companion.id)?.characterCard),true) : undefined
     const detachSpeech=progress?.acknowledge ? installLiveSpeech(agent,progress.acknowledge,
       ()=>questionOrigin(agent.session.id,agent.session.snapshotEvents(),this.store.snapshot().sessions)?.id===session.id?session.id:undefined,
@@ -1254,7 +1259,7 @@ export class PartnerAgentRuntime {
       agent.followup(userMessage)
       await agent.whenIdle()
       modelEndedAt=Date.now()
-    } finally { this.channelReplyOwners.delete(agent.session.id); detachCompletion(); detachCompletionTools(); detachPreamble?.(); detachSpeech?.(); detach() }
+    } finally { this.channelReplyOwners.delete(agent.session.id); detachCompletion(); detachCompletionTools(); detachPreamble?.(); detachSpeech?.(); detachIntermediate?.(); detach() }
     const response:ReturnType<typeof channelReplyPartsAfter> = completion.failed?{text:INCOMPLETE_REPLY,referenceTexts:[]}:channelReplyPartsAfter(agent.session.snapshotEvents(), startSeq)
     const stateStarted=Date.now()
     await this.store.update(state => {

@@ -172,7 +172,8 @@ test('work report preserves all facts and failures without another model, reject
  const events=[{seq:1,type:'turn/start',data:{}},{seq:2,type:'user/message',data:{id:'u',source:{kind:'user'}}},{seq:3,type:'tool/call',data:{name:'partner_work_execute',callId:'w'}},{seq:4,type:'tool/result',data:{message:{toolCallId:'w',content:[{type:'text',text:JSON.stringify(report)}]}}}]
  const tool=attachmentTool('c1',{snapshot:()=>state,isCompanionRemoving:()=>false},f.service,{}, {sendExplicitAttachment:()=>assert.fail('local must not send')},'/api')
  const exec={signal:f.signal,agent:{session:{id:'s1',header:{cwd:f.cwd},snapshotEvents:()=>events}},deferContext:()=>{}}
- const result=JSON.parse(await tool.execute({workReport:{runIds:['real']}},exec));assert.equal(result.channel,'none')
+ const result=JSON.parse(await tool.execute({workReport:{runIds:['real'],name:'视频能力核验.md'}},exec));assert.equal(result.channel,'none');assert.equal(result.name,'视频能力核验.md')
+ await assert.rejects(tool.execute({workReport:{runIds:['real'],name:'../escape.md'}},exec),/安全/)
  const text=(await f.service.bytes(f.service.get(result.deliveryId))).toString()
  for(const field of ['facts','unknowns','evidence','artifacts'])for(const value of report.result[field])assert.ok(text.includes(value))
  await assert.rejects(tool.execute({workReport:{runIds:['invented']}},exec),/不存在/)

@@ -14,11 +14,11 @@ import { isInternalTaskNotice, isRequirementDeliveryReceipt } from '../channels/
 import { continuationChannelOrigin } from '../scheduler/channel-origin.js'
 import type { AttachmentDeliveryService } from './service.js'
 
-export const ATTACHMENT_PROTOCOL = '交付图片或文档时，如果当前提供 partner_send_attachment，必须调用它，path 填生成工具返回的真实本地文件路径；长回复可用 document 的 name/content 直接生成文档，本轮完整工作报告可用 workReport.runIds 引用真实记录。普通 Markdown 链接仅是引用，不代表发送成功。工具会把指定文件显示在会话中，并在当前会话绑定渠道时发送真实附件；必须以工具返回的 channel 状态为准。失败用 deliveryId 重试原附件，无需重新生成。远端文件先下载到当前会话目录，不要编造 sandbox 地址。不要提交中间产物、内部核验材料或用户未要求交付的文件；按用户配置的短句接话交付完整长回复或工作报告属于已选择的交付方式。工具完成后最终回复按当前闲聊节奏接话，短句模式不再汇总文档结论，不要再次粘贴附件下载地址。若临时执行环境未提供此工具，只向负责人交回真实文件位置和结果，不得声称附件已发送。'
+export const ATTACHMENT_PROTOCOL = '交付图片或文档时，如果当前提供 partner_send_attachment，必须调用它，path 填生成工具返回的真实本地文件路径；长回复可用 document 的 name/content 直接生成文档，本轮完整工作报告可用 workReport.runIds 引用真实记录。普通 Markdown 链接仅是引用，不代表发送成功。工具会把指定文件显示在会话中，并在当前会话绑定渠道时发送真实附件；必须以工具返回的 channel 状态为准。失败用 deliveryId 重试原附件，无需重新生成。远端文件先下载到当前会话目录，不要编造 sandbox 地址。不要提交中间产物、内部核验材料或用户未要求交付的文件；按用户配置的短句接话交付完整长回复或工作报告属于已选择的交付方式。报告用贴合任务主题的文件名；工具完成后继续原目标或按当前人物设定收尾，不要再次粘贴附件下载地址。若临时执行环境未提供此工具，只向负责人交回真实文件位置和结果，不得声称附件已发送。'
 
 export function attachmentTool(companionId: string, store: PartnerStore, service: AttachmentDeliveryService, ctx: Context, channels: ChannelManager, prefix: string): ToolDefinition {
   return {
-    name: 'partner_send_attachment', description: '明确交付一个图片或文档到当前伙伴会话及其绑定渠道。path、deliveryId、document、workReport 四选一；document 直接把完整正文生成为 Markdown/文本附件，workReport 按本轮真实 runId 原样生成完整工作报告；path 提交当前会话目录内真实文件（64 MB 内），deliveryId 重试已保存附件。不是文件检索工具，不自动下载 URL，不跨伙伴读取文件。内部看板执行/验收仅展示在会话，不向渠道逐项发送。',
+    name: 'partner_send_attachment', description: '明确交付一个图片或文档到当前伙伴会话及其绑定渠道。path、deliveryId、document、workReport 四选一；document 直接把完整正文生成为 Markdown/文本附件，workReport 按本轮真实 runId 原样生成完整工作报告，name 填任务主题文件名；path 提交当前会话目录内真实文件（64 MB 内），deliveryId 重试已保存附件。不是文件检索工具，不自动下载 URL，不跨伙伴读取文件。内部看板执行/验收仅展示在会话，不向渠道逐项发送。',
     parameters: { type:'object', properties:{document:REPLY_DOCUMENT_SCHEMA,workReport:WORK_REPORT_SCHEMA,path:{type:'string'},deliveryId:{type:'string',description:'失败回执中的 ID；已成功的同一交付不会重复发送'}}, additionalProperties:false },
     output:{schema:{type:'string'},render:(_args,value)=>[{type:'text',text:String(value)}],presentationMeta:(_args,value)=>attachmentDeliveryMeta(value)},
     presentCall:()=>({card:'generic',title:'交付图片或文档'}),

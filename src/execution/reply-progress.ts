@@ -2,7 +2,7 @@ import type {SessionEvent} from '@deepseek-ai/dsh-session'
 
 export type ReplyStage = 'queued' | 'working' | 'tools' | 'composing'
 export type ReplyActivity = {kind:'text';text:string} | {kind:'tool-start';id:string;name:string} | {kind:'tool-end';id:string;failed:boolean}
-export type ReplyProgress = ((stage:ReplyStage | ReplyActivity)=>void) & {acknowledge?:(text:string)=>Promise<void>}
+export type ReplyProgress = ((stage:ReplyStage | ReplyActivity)=>void) & {acknowledge?:(text:string)=>Promise<void>;sendChat?:(parts:import('../chat/protocol.js').ChatPart[],routeId:string,receipt:string)=>Promise<void>}
 
 /** Deliberately expose only fixed labels, never tool names, arguments or reasoning. */
 export function replyStage(event:SessionEvent):ReplyStage|undefined {

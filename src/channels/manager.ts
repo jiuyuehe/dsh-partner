@@ -1,3 +1,4 @@
+import type { ReplyProgress } from '../execution/reply-progress.js'
 import {resolveQqQuote,quotedMessageText} from './qq/quote.js'
 import { AuthoredProgress } from './authored-progress.js'
 import { activityPolicyCurrent } from '../character/post-reply.js'
@@ -689,7 +690,10 @@ export class ChannelManager {
     }
     const authored = new AuthoredProgress(text => api.sendText(userId, text, this.contextTokens.get(tokenKey), signal),
       () => channelReplyAllowed(this.store.snapshot(), channel.id, userId) && this.store.snapshot().channels.some(c => c.id === channel.id && c.enabled && c.companionId === companion.id), signal,8)
-    const reply = await this.agents.reply(companion, channel.id, userId, { text: inboundText, attachments }, authored.update).finally(() => authored.finish())
+    const updates:ReplyProgress=Object.assign(authored.update,{sendChat:async(parts:import('../chat/protocol.js').ChatPart[],routeId:string,key:string)=>{
+      signal.throwIfAborted();await this.sendChatReply(channel,userId,key,{text:'',attachments:[],chatParts:parts,chatOriginRouteId:routeId})
+    }})
+    const reply = await this.agents.reply(companion, channel.id, userId, { text: inboundText, attachments }, updates).finally(() => authored.finish())
     if(reply.chatParts){
       // Claim the input before delivery so recovery never executes its tools again.
       await this.rememberReceipt(receipt)
@@ -1051,7 +1055,14 @@ export class ChannelManager {
         progress?.start()
         if(progress)this.directReplyProgress.set(progressKey,progress)
         const agentStarted=Date.now()
-        const pendingReply=this.agents.reply(companion,channel.id,event.sender,{text,attachments,...(sessionTitle?{sessionTitle}:{})},progress ? Object.assign(progress.update,{...(authored?{acknowledge:authored.update.acknowledge!}:{})}) : authored?.update)
+        const updates:ReplyProgress=Object.assign(progress?.update??authored?.update??(()=>{}),{
+          ...(authored?{acknowledge:authored.update.acknowledge!}:{}),
+          sendChat:async(parts:import('../chat/protocol.js').ChatPart[],routeId:string,key:string)=>{
+            signal.throwIfAborted();if(!allowed())throw Error('渠道授权已变化，中途消息未发送')
+            await this.sendChatReply(channel,event.sender,key,{text:'',attachments:[],chatParts:parts,chatOriginRouteId:routeId})
+          },
+        })
+        const pendingReply=this.agents.reply(companion,channel.id,event.sender,{text,attachments,...(sessionTitle?{sessionTitle}:{})},updates)
         prepared()
         const reply=await pendingReply.finally(()=>authored?.finish())
         const replyReady=Date.now()

@@ -18,6 +18,7 @@ function currentInput(events:readonly SessionEvent[]):string|undefined {
 export function hasCurrentSpeech(events:readonly SessionEvent[]):boolean {
   for(const e of [...events].reverse()) {
     if(e.type==='turn/start'||e.type==='user/message'&&(e.data.source.kind==='user'||isIdleContactNotice(e)||isInternalTaskNotice(e)&&!isRequirementDeliveryReceipt(e)))return false
+    if(e.type==='tool/call'&&e.data.name==='partner_work_execute')return false
     const reply=chatReplyFromEvent(e)
     if(reply?.intermediate&&reply.delivered&&reply.inputMessageId===currentInput(events))return !reply.taskPreamble
   }
