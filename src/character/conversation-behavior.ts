@@ -1,5 +1,10 @@
 import type { CharacterCard } from './domain.js'
 
+/** Exclusive persona owns expression, including task delivery style. */
+export function usesShortDeliveryPolicy(card?: CharacterCard): boolean {
+  return card?.length === 'short' && !card.exclusivePrompt
+}
+
 /** Stable settings and delivery contracts; expression belongs to the configured persona. */
 export function renderConversationBehavior(card?: CharacterCard): string {
   return [
@@ -52,6 +57,7 @@ export function renderTaskConversationGuidance(): string {
 
 /** Delivery policy, not a replacement persona. Explicit requests override defaults. */
 export function renderReplyRhythm(card?: CharacterCard): string {
+  if (card?.exclusivePrompt) return '工作记录是事实资料，不是回复范文。由当前角色结合原对话决定回应、篇幅与是否需要附件；未验证和失败不能说成成功，附件送达以实际回执为准。'
   const common = '措辞按原人格；本轮明确要求详细解释、原文或不要附件时优先照做。简单结果直接说，事实和未完成事项完整保留在交付内容中。附件成功以工具回执为准，发送失败说明情况，不宣称已交付。'
   if (card?.length === 'short') return '篇幅偏好：简短。执行前按人格用半句或一句只说接下来做什么，不展开计划。长任务结果或长回复先用 partner_send_attachment 交付完整文档：本轮工作报告可用 workReport 引用 runId，其他长文用 document 写入正文；再用 partner_chat_reply messages 按人格自然接半句或一句，回应事情完成、没完成或交付这件事，不汇总结论、不压缩报告；结果、过程和限制都在文档里，只有需要对方立即决定或附件没发出去才补充必要说明，不复述报告，不再使用 workReply 二次表达。简单工具结果不强制发文件。' + common
   if (card?.length === 'rich') return '篇幅偏好：丰富。执行前说明动作及必要步骤；结果在正文按话题展开理由、过程和限制，代码、大表格或完整报告用附件补充，不重复整份附件。' + common

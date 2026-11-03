@@ -154,3 +154,17 @@ test('direct work entry still requires the same persona preamble and permissions
  const output=await f.invoke('partner_work_execute',{input:'查证'})
  assert.equal(output.isError,false);assert.equal(sent,1);assert.equal(f.requests(),1)
 })
+
+test('exclusive persona work result retains evidence but injects no short report workflow',async t=>{
+ const f=fixture(t);f.c.characterCard={enabled:true,length:'short',exclusivePrompt:true}
+ const long={...result,evidence:['已读取的核验依据。'.repeat(160)]}
+ f.scope.ctx.tools.register(tool('web_read'))
+ f.setDriver(async({invoke})=>{await call(invoke,'web_read');await invoke('partner_work_result',long)})
+ const output=await f.invoke('partner_work_execute',{input:'核实当前接口'})
+ assert.equal(output.isError,false)
+ const parsed=JSON.parse(output.value)
+ assert.deepEqual(parsed.result,long)
+ assert.doesNotMatch(parsed.next,/半句|不汇总|180|下一步先调用|workReply/)
+ assert.match(parsed.next,/原对话直接用 partner_chat_reply messages/)
+ assert.match(parsed.next,/未验证和失败不能说成成功/)
+})

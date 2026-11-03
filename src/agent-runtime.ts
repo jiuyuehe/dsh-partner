@@ -1,3 +1,4 @@
+import { usesShortDeliveryPolicy } from './character/conversation-behavior.js'
 import { normalizeBackgroundContext } from './character/background-context.js'
 import { activityPlanCurrent } from './character/activity-plan.js'
 import { renderThoughts } from './character/thoughts.js'
@@ -1228,11 +1229,11 @@ export class PartnerAgentRuntime {
       const stage=replyStage(event);if(stage)reportProgress(progress,stage)
       if(directProgress){const activity=replyActivity(event);if(activity)reportProgress(progress,activity)}
     })
-    const detachPreamble=progress?.acknowledge ? installTaskPreamble(agent,progress.acknowledge,()=>questionOrigin(agent.session.id,agent.session.snapshotEvents(),this.store.snapshot().sessions)?.id===session.id,()=>this.store.snapshot().companions.find(c=>c.id===companion.id)?.characterCard?.length==='short',true) : undefined
+    const detachPreamble=progress?.acknowledge ? installTaskPreamble(agent,progress.acknowledge,()=>questionOrigin(agent.session.id,agent.session.snapshotEvents(),this.store.snapshot().sessions)?.id===session.id,()=>usesShortDeliveryPolicy(this.store.snapshot().companions.find(c=>c.id===companion.id)?.characterCard),true) : undefined
     const detachSpeech=progress?.acknowledge ? installLiveSpeech(agent,progress.acknowledge,
       ()=>questionOrigin(agent.session.id,agent.session.snapshotEvents(),this.store.snapshot().sessions)?.id===session.id?session.id:undefined,
       ()=>{const card=this.store.snapshot().companions.find(c=>c.id===companion.id)?.characterCard;return !!card?.enabled&&!!card.segmentedReplies},
-      ()=>this.store.snapshot().companions.find(c=>c.id===companion.id)?.characterCard?.length==='short') : undefined
+      ()=>usesShortDeliveryPolicy(this.store.snapshot().companions.find(c=>c.id===companion.id)?.characterCard)) : undefined
     const completion=new ReplyCompletionGuard(agent,()=>questionOrigin(agent.session.id,agent.session.snapshotEvents(),this.store.snapshot().sessions)?.id===session.id)
     const detachCompletion=this.ctx.on('agent/turn-stopping',completion.stop)
     const detachCompletionTools=agent.ctx.on('tools/pre-execute',async(exec,next)=>{

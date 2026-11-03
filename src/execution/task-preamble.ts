@@ -72,7 +72,7 @@ export function installTaskPreamble(agent:Agent,send:(text:string)=>Promise<void
   const gate=new TaskPreambleGate(()=>agent.session.snapshotEvents(),send,active,short,unified)
   const unregister=unified?()=>{}:tools.register({
     name:'partner_chat_progress',
-    description:'私聊任务开始前按当前人格自然接话，遵循当前闲聊节奏：短句接话只用半句或一句说准备做什么；自然模式简述动作，展开模式可说明必要步骤（例如核实什么或生成什么），保留角色称呼、语气与当前对话习惯；不只说俏皮话，也不写客服式进度播报。立即发送 text，确认投递后返回，不结束回合；随后继续实际调查、生图或执行，最后再正常答复。一轮只发送一次，不能用于自主活动或内部任务。计划使用将要做的语气，不把尚未调用的工具说成已执行或已完成；没有真实权限拒绝结果时不要声称账号无权限。',
+    description:'私聊任务开始前按当前人格自然接话，让对方知道准备做什么，具体语气和表达按角色设定与本轮请求。立即发送 text，确认投递后返回，不结束回合；随后继续实际调查、生图或执行，最后再正常答复。一轮只发送一次，不能用于自主活动或内部任务。计划使用将要做的语气，不把尚未调用的工具说成已执行或已完成；没有真实权限拒绝结果时不要声称账号无权限。',
     parameters:{type:'object',properties:{text:{type:'string',minLength:1,maxLength:1200},inlineDetails:{type:'boolean',description:'仅用户本轮明确要求完整计划时使用，允许展开前置回应。'}},required:['text'],additionalProperties:false},
     output:{schema:{type:'object'},render:()=>[{type:'text',text:'前置回应已送达；继续执行任务，完成后再给出最终回复。'}]},
     presentCall:()=>({card:'generic',title:'任务前置回应'}),

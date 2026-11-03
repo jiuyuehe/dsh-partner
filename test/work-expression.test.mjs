@@ -245,3 +245,23 @@ test('an intermediate chat receipt cannot silently bypass undelivered long work'
  await assert.rejects(chatTools('c',f.store,{}, {},f.ctx,'/local')[1].execute({messages:[]},f.exec),/长任务报告尚未交付/)
  assert.equal(f.concluded(),0)
 })
+
+test('exclusive persona answers long work directly without forced attachment, line count or rewrite',async()=>{
+ const f=fixture();Object.assign(f.c.characterCard,{length:'short',exclusivePrompt:true})
+ const long=structuredClone(report);long.result.evidence=['内部核验记录。'.repeat(300)]
+ f.events[4].data.message.content[0].text=JSON.stringify(long)
+ const before=JSON.stringify(f.events),tool=chatTools('c',f.store,{}, {},f.ctx,'/local')[1]
+ const messages=[{text:'找到啦，不过视频还没验证。'},{text:'必要的原文依据。'.repeat(25)}]
+ const out=await tool.execute({messages},f.exec)
+ assert.deepEqual(out.parts,messages.map(p=>({type:'text',...p})))
+ assert.equal(f.calls(),0);assert.equal(f.concluded(),1);assert.equal(JSON.stringify(f.events),before)
+ // Turning off exclusive restores the existing optional short-delivery policy immediately.
+ f.c.characterCard.exclusivePrompt=false
+ await assert.rejects(tool.execute({messages},f.exec),/长任务报告尚未交付/)
+})
+
+test('exclusive persona rejects optional second-model work expression without sending',async()=>{
+ const f=fixture();f.c.characterCard.exclusivePrompt=true
+ await assert.rejects(f.run(),/原对话直接使用 messages/)
+ assert.equal(f.calls(),0);assert.equal(f.concluded(),0)
+})
