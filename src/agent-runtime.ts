@@ -1052,7 +1052,7 @@ export class PartnerAgentRuntime {
     }
     signal.throwIfAborted()
     const relationshipAllowed = !identityRelation || identityRelation.matched
-    const text = [origin?.type === 'user/message' && origin.data.source.kind === 'user' && access.sendTools && (!access.allowedTools || access.allowedTools.includes('partner_identity')) && personaReferenceRequested(query) ? renderPersonaReference() : '', access.allowedTools || !access.sendTools ? access.denialReason + ' 回复能力通过 partner_tools 查询和调用（未开启统一入口时使用原工具）；语音能力为 partner_qq_reply；不能代办操作，不承诺使用私有能力。' : '',
+    const text = [origin?.type === 'user/message' && origin.data.source.kind === 'user' && access.sendTools && (!access.allowedTools || access.allowedTools.includes('partner_identity')) && personaReferenceRequested(query) ? renderPersonaReference() : '', access.allowedTools || !access.sendTools ? access.denialReason + ' 回复能力通过 partner_tools 查询和调用（未开启统一入口时使用原工具）；语音、真正群 @ 提及和已开启的戳一戳使用 partner_qq_reply（voices/voice/mention/poke）；不能代办操作，不承诺使用私有能力。' : '',
       renderIdentityRelationship(companion, identityRelation ? { channel: 'qq', matched: identityRelation.matched } : { channel: 'default' }),
       renderAffection(companion,affectionAudience),
       renderCharacterContext(companion.characterCard, query, relationshipAllowed ? story : undefined),

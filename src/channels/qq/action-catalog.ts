@@ -658,8 +658,8 @@ export const QQ_ACTIONS:readonly QqAction[] = [
   {
     "id": "send_poke",
     "category": "interact",
-    "title": "拍一拍",
-    "description": "拍一拍（群聊/私聊自动路由）",
+    "title": "戳一戳 / 拍一拍",
+    "description": "戳一戳 / 拍一拍；群内目标 user_id 不需要私聊审批，group_id 为所在群，当前群会话省略时自动补全；私聊仅限已授权联系人。当前聊天也可使用 partner_qq_reply action=poke",
     "effect": "write",
     "schema": {
       "type": "object",

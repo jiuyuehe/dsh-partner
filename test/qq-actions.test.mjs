@@ -236,3 +236,13 @@ test('public reaction revocation during message lookup prevents external write',
  await assert.rejects(tool.execute({action:'call',operation:'set_msg_emoji_like',params:{message_id:1,emoji_id:'14'}},f.exec))
  assert.deepEqual(calls,['get_msg']);assert.equal(f.channel.qqActivity,undefined)
 })
+
+test('group poke defaults to the actual source group and never requires private approval of its member',async()=>{
+ const f=fixture(),route={id:'r',sessionId:'s',companionId:'c',kind:'channel',channelId:'qq',userId:'group:493531768:834426963',inboundMessageIds:['u']}
+ f.state.sessions=[route]
+ f.channel.qq.identityBinding={enabled:true,qqIds:['834426963']}
+ f.exec.agent.session.snapshotEvents=()=>[{type:'user/message',data:{id:'u',source:{kind:'user'}}}]
+ await f.call('send_poke',{user_id:33445566})
+ assert.deepEqual(f.requests[0].params,{group_id:493531768,user_id:33445566})
+ const p=fixture();await assert.rejects(p.call('send_poke',{user_id:33445566}),/私聊对象尚未授权/)
+})

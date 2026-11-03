@@ -144,6 +144,8 @@ export function qqActionTools(owner:string,store:PartnerStore,call:QqActionCall,
   }
   if(args.action==='describe')return {operation:action.id,description:action.description,effect:action.effect,parameters:action.schema,defaults:{qzoneVisibility:qqSettings(channel.qq).qzoneVisibility,voiceCharacter:qqSettings(channel.qq).voiceCharacter},media:action.media??[],...(action.schema.properties?.group_id||action.schema.properties?.user_id||action.messageScope?{targets:scopedPublic()?{groups:publicTargets().group_id?[publicTargets().group_id]:[],privatePeers:publicTargets().user_id?[publicTargets().user_id]:[],scope:'仅限当前会话'}:{groups:qqSettings(channel.qq).groupReplies?qqSettings(channel.qq).groupIds:[],privatePeers:qqSettings(channel.qq).privateReplies?store.snapshot().pairings.filter(p=>p.channelId===channel.id&&p.status==='approved'&&!qqGroupPeer(p.userId)).map(p=>p.userId):[]}}:{})}
   const params=structuredClone(args.params??{}),settings=qqSettings(channel.qq)
+  // A poke from a group stays in that group when the model omits group_id.
+  if(action.id==='send_poke'&&params.group_id===undefined&&initialConversation){const group=qqGroupPeer(initialConversation.userId);if(group)params.group_id=Number(group.groupId)}
   if(action.id==='send_qzone_msg'&&params.ugc_right===undefined)params.ugc_right=settings.qzoneVisibility
   if(['send_group_ai_record','get_ai_record'].includes(action.id)&&params.character===undefined&&settings.voiceCharacter)params.character=settings.voiceCharacter
   validateQqParams(action.schema,params)

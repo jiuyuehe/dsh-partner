@@ -15,7 +15,7 @@ export function markAutonomousAgent(agent: object): () => void {
   return () => { autonomousAgents.delete(agent) }
 }
 
-export const QQ_CHAT_ONLY_REASON = '当前 QQ 账号未归属此伙伴，仅允许当前会话的文字、表情发送与收藏整理、语音回复、回忆检索及已开启的当前会话表情回应和群信息查询；不能使用私有能力、修改设定或触发自主任务。'
+export const QQ_CHAT_ONLY_REASON = '当前 QQ 账号未归属此伙伴，仅允许当前会话的文字、表情发送与收藏整理、语音回复、当前群提及与已开启的戳一戳、回忆检索及已开启的当前会话表情回应和群信息查询；不能使用私有能力、修改设定或触发自主任务。'
 
 /** Re-evaluate at dispatch, so stale schemas and saved revocations cannot authorize work. */
 export function qqChatOnly(agent: Pick<Agent, 'session'>, state: Pick<PartnerState, 'sessions' | 'channels'> & Partial<Pick<PartnerState, 'companions' | 'pairings'>>, inputEvents?: readonly SessionEvent[]): boolean {

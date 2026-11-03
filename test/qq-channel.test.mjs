@@ -246,3 +246,21 @@ test('quoted reply routing uses confirmed same-group message authors, never untr
  const raw=oneBotMessage(groupEvent({message:[{type:'reply',data:{id:333,qq:bot}},{type:'at',data:{qq:bot}}]}),bot,'',groupSettings)
  assert.equal(raw.qqGroup.replyToId,'333');assert.equal(raw.qqGroup.replyTo,undefined)
 })
+
+const pokeEvent=(extra={})=>({post_type:'notice',notice_type:'notify',sub_type:'poke',self_id:Number(bot),user_id:Number(peer),target_id:Number(bot),time:1793697000,...extra})
+test('poke notices use ordinary permission routing and explicit bot mentions survive without text',()=>{
+ const raw=pokeEvent({group_id:Number(group)})
+ const m=oneBotMessage(raw,bot,'',groupSettings)
+ assert.equal(m.sender,groupUser);assert.equal(m.qqGroup.mentioned,true);assert.match(m.text,/戳了戳你/)
+ assert.equal(oneBotMessage(raw,bot,'',groupSettings).id,m.id)
+ for(const extra of [{target_id:33445566},{self_id:33445566},{user_id:Number(bot)},{group_id:33445566},{time:undefined}])assert.equal(oneBotMessage({...raw,...extra},bot,'',groupSettings),undefined)
+ assert.equal(oneBotMessage(pokeEvent(),bot,'',{...groupSettings,privateReplies:false}),undefined)
+ assert.match(oneBotMessage(groupEvent({message:[{type:'at',data:{qq:bot}}]}),bot,'',groupSettings).text,/@ 了你/)
+})
+test('forward WS delivers poke notices through the same poll path as chat',async t=>{
+ const s=await server(t),api=new DirectTransport({platform:'qq',baseUrl:s.url,targetId:'',qq:groupSettings},'',{accountId:bot,peerId:''});t.after(()=>api.close())
+ await api.validate()
+ s.connections[0].ws.send(JSON.stringify(pokeEvent({group_id:Number(group)})))
+ const batch=await api.poll(undefined,AbortSignal.timeout(3000),100)
+ assert.equal(batch.messages.length,1);assert.match(batch.messages[0].text,/戳了戳你/)
+})

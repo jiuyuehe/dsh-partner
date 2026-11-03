@@ -29,6 +29,7 @@ const GROUPS=[
 ]
 const IMAGE_ALIASES=['生图','画图','绘图','生成图片','图片生成','图生图','改图','编辑图片','图片编辑','画一张','画张','绘制','图片','image generation','image editing']
 function toolSearchMatches(tool:ToolDefinition,query:string):boolean {
+ if(tool.name==='partner_qq_reply'&&/(?:@|提及|艾特|戳一戳|拍一拍|poke|mention|语音)/iu.test(query))return true
  return `${tool.name} ${tool.description}`.toLocaleLowerCase().includes(query) || ['generate_image','image_gen.imagegen'].includes(tool.name) && IMAGE_ALIASES.some(alias=>alias.includes(query)||query.includes(alias))
 }
 function category(name:string):string {
@@ -98,7 +99,7 @@ export function installToolDiscovery(runtime:ToolRuntime,owner:string,store:Part
  }
  try {
   for(const entry of entries)disposers.push(runtime.register({...entry.tool,execute:async(args,exec)=>{if(!entry.allowed())throw Error('能力已撤回');return entry.tool.execute(args,exec)}}))
-  disposers.push(runtime.register({name:'partner_channel_access',description:'查询真实渠道与当前发言账号的能力权限。默认适配器沿用已有授权；QQ 普通成员提供回复、表情发送与收藏整理、语音、本会话回忆、已开启的当前会话消息表情回应与群信息查询，归属账号与可信自主任务可使用已授权能力。不接受自报账号，不改变权限。返回的能力通过 partner_tools 调用。',
+  disposers.push(runtime.register({name:'partner_channel_access',description:'查询真实渠道与当前发言账号的能力权限。默认适配器沿用已有授权；QQ 普通成员提供回复、表情发送与收藏整理、语音、真正群 @ 提及、已开启的戳一戳、本会话回忆、已开启的当前会话消息表情回应与群信息查询，归属账号与可信自主任务可使用已授权能力。不接受自报账号，不改变权限。返回的能力通过 partner_tools 调用。',
    parameters:{type:'object',properties:{category:{type:'string'},query:{type:'string',maxLength:80},offset:{type:'integer',minimum:0}},additionalProperties:false},output:{schema:{type:'object'},render},presentCall:()=>({card:'generic',title:'当前渠道能力'}),
    async execute(raw,exec){
     guard(exec)

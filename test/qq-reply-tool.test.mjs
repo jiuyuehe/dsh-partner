@@ -96,3 +96,44 @@ test('real unified voice call persists delivery metadata for channel projection'
  const projected=await prepareChannelReply(channelReplyPartsAfter(agent.session.snapshotEvents(),-1),'/tmp')
  assert.equal(projected.alreadyDelivered,true);assert.equal(projected.text,'');assert.deepEqual(projected.chatParts,[])
 })
+
+test('real group mentions send structured at segments, stay in the room and do not end the turn',async()=>{
+ const f=fixture();f.state.channels[0].qq.replyVoiceEnabled=false
+ const call=async(...args)=>args[1]==='get_group_member_info'?(args[4](),{group_id:99887766,user_id:33445566}):f.call(...args)
+ const tool=qqReplyTool('c',f.store,call)
+ const value=await tool.execute({action:'mention',userId:'33445566',text:'来一下'},f.exec)
+ assert.deepEqual(f.requests[0].params,{group_id:99887766,message:[{type:'at',data:{qq:'33445566'}},{type:'text',data:{text:' 来一下'}}]})
+ assert.equal(f.concluded(),0)
+ const meta=tool.output.presentationMeta({},value)
+ assert.equal(meta.intermediate,true);assert.equal(meta.delivered,true);assert.match(meta.parts[0].text,/@33445566/)
+ await tool.execute({action:'mention',userId:'33445566'},f.exec);assert.equal(f.requests.length,1)
+ await assert.rejects(qqReplyTool('c',f.store,async()=>({user_id:99,group_id:99887766})).execute({action:'mention',userId:'33445566'},f.exec),/群成员/)
+ await assert.rejects(fixture(true).tool.execute({action:'mention',userId:'33445566'},fixture(true).exec))
+})
+test('poke is current-conversation only, requires enabled action and never replays an uncertain send',async()=>{
+ const f=fixture(true);f.state.channels[0].qq.replyVoiceEnabled=false
+ await assert.rejects(f.tool.execute({action:'poke'},f.exec),/尚未开启/)
+ f.state.channels[0].qq.enabledActions.push('send_poke')
+ await assert.rejects(f.tool.execute({action:'poke',userId:'33445566'},f.exec),/其他私聊/)
+ let attempts=0
+ const tool=qqReplyTool('c',f.store,async(...args)=>{args[4]();attempts++;assert.equal(args[1],'send_poke');assert.deepEqual(args[2],{user_id:22345678});throw Error('timeout')})
+ await assert.rejects(tool.execute({action:'poke'},f.exec),/未确认发送/)
+ assert.equal((await tool.execute({action:'poke'},f.exec)).status,'unknown');assert.equal(attempts,1)
+})
+test('poke accepts successful empty OneBot data and produces a visible interaction receipt',async()=>{
+ const f=fixture(true);f.state.channels[0].qq.enabledActions.push('send_poke')
+ const tool=qqReplyTool('c',f.store,async(...args)=>{args[4]();return null})
+ const result=await tool.execute({action:'poke'},f.exec)
+ assert.equal(result.status,'confirmed');assert.match(tool.output.presentationMeta({},result).parts[0].text,/戳了戳/)
+ f.state.pairings[0].status='blocked'
+ await assert.rejects(tool.execute({action:'poke'},f.exec),/撤回/)
+})
+
+test('group poke can target a different member without that members private approval',async()=>{
+ const f=fixture();f.state.channels[0].qq.enabledActions.push('send_poke');f.state.channels[0].qq.replyVoiceEnabled=false
+ const tool=qqReplyTool('c',f.store,async(...args)=>args[1]==='get_group_member_info'?(args[4](),{group_id:99887766,user_id:33445566}):f.call(...args))
+ const result=await tool.execute({action:'poke',userId:'33445566'},f.exec)
+ assert.equal(result.status,'confirmed');assert.equal(f.requests[0].action,'send_poke')
+ assert.deepEqual(f.requests[0].params,{user_id:33445566,group_id:99887766})
+ assert.equal(f.concluded(),0)
+})

@@ -75,7 +75,7 @@ export class OneBotConnection {
             this.pending.delete(data.echo)
             if (data.status === 'ok' && data.retcode === 0) pending.resolve(data.data)
             else pending.reject(new OneBotError(`QQ 接口执行失败（retcode ${Number.isFinite(data.retcode) ? data.retcode : '未知'}）`, false))
-          } else if (data.post_type === 'message' && ['private','group'].includes(data.message_type)) {
+          } else if ((data.post_type === 'message' && ['private','group'].includes(data.message_type)) || (data.post_type === 'notice' && data.notice_type === 'notify' && data.sub_type === 'poke')) {
             if (this.events.length >= 500) {
               this.fault = new OneBotError('QQ 消息积压超过 500 条，请检查处理状态后重新启用渠道', false)
               socket.close(); this.wake?.(); return
