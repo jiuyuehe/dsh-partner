@@ -26,7 +26,8 @@ test('background check records unchanged independently of score and persona revi
  await f.service.apply(f.turn,{request:r.request,evaluation:unchanged})
  assert.equal(f.c.interactionReview.affection.outcome,'unchanged');assert.equal(f.c.interactionReview.persona.outcome,'unchanged')
  assert.equal(f.c.affection,undefined);assert.equal(f.c.personaHistory,undefined)
- assert.equal(f.service.prepare({...f.turn,id:'next',at:Date.now()}),undefined)
+ assert.equal(f.service.prepare(f.turn),undefined)
+ assert.equal(f.service.prepare({...f.turn,id:'next',at:Date.now()}).request.affection,true)
 })
 test('grounded changes save once; direct tool and reflection share the user-message dedup key',async()=>{
  const f=fixture(),r=f.service.prepare(f.turn)
@@ -102,4 +103,16 @@ test('same model malformed review does not lose successful memory work or claim 
  await service.reflect(f.c,f.turn);await service.processPending(f.c)
  assert.equal(f.c.interactionReview.affection.outcome,'failed')
  assert.equal(await memory.hasPendingTurns('c','scope'),false)
+})
+
+test('successive background reviews allow larger positive and negative changes without extra calls',async()=>{
+ const f=fixture()
+ for(const [i,delta] of [3,-5,4].entries()){
+  const turn={...f.turn,id:'turn-'+i,at:Date.now()+i,userMessageIds:['u-'+i]}
+  const request=f.service.prepare(turn,turn.at).request
+  await f.service.apply(turn,{request,evaluation:{...unchanged,affection:{...positive.affection,delta}}})
+  assert.equal(f.c.interactionReview.affection.outcome,'changed')
+ }
+ assert.equal(f.c.affection.score,2)
+ assert.deepEqual(f.c.affection.history.map(h=>h.delta),[3,-5,4])
 })

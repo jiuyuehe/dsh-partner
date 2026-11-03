@@ -6,7 +6,7 @@ import {join} from 'node:path'
 import {createDefaultCompanion} from '../lib/domain.js'
 import {PartnerStore} from '../lib/store.js'
 import {emptyCharacterCard,normalizeCharacterCard} from '../lib/character/domain.js'
-import {affectionProgress,affectionEnabled,adjustAffection,renderAffection,AFFECTION_INTERVAL} from '../lib/character/affection.js'
+import {affectionProgress,affectionEnabled,adjustAffection,renderAffection} from '../lib/character/affection.js'
 import {affectionAudienceAllowed} from '../lib/character/affection-adapter.js'
 import {affectionTurnEligible,currentAffectionAudience} from '../lib/character/affection-context.js'
 import {idleActivityProbability,IDLE_CONTACT_NOTICE} from '../lib/character/idle-contact.js'
@@ -50,34 +50,30 @@ test('verified input provenance survives shared sessions, unknown QQ-only input 
  assert.equal(currentAffectionAudience(f.state,'c','s',[notice]),false)
 })
 const change=(c,id,at,delta=1)=>adjustAffection(c,id,at,delta,'具体互动带来的感受','当前用户原话')
-test('slower positive changes, separate rolling budgets, deduplication and pause',()=>{
+test('meaningful interactions can rise and fall within minutes without daily budgets',()=>{
  const f=fixture(),revision=f.c.updatedAt
- assert.equal(affectionProgress().score,0)
- assert.equal(change(f.c,'a',now),true)
- assert.equal(change(f.c,'a',now+AFFECTION_INTERVAL),false)
- assert.equal(change(f.c,'b',now+1000),false)
- assert.equal(change(f.c,'b',now+AFFECTION_INTERVAL),true)
- assert.equal(change(f.c,'c',now+2*AFFECTION_INTERVAL),false)
- assert.equal(f.c.affection.score,2)
- assert.equal(change(f.c,'bad',now+2*AFFECTION_INTERVAL,-3),true)
- assert.equal(f.c.affection.score,-1)
- assert.equal(change(f.c,'c',now+3*AFFECTION_INTERVAL),false,'negative change cannot replenish positive budget')
- assert.equal(change(f.c,'bad2',now+3*AFFECTION_INTERVAL,-3),true)
- assert.equal(change(f.c,'bad3',now+4*AFFECTION_INTERVAL,-1),false)
- assert.equal(change(f.c,'next-day',now+25*3600000),true)
+ assert.equal(change(f.c,'a',now,3),true)
+ assert.equal(change(f.c,'a',now+1000,5),false)
+ assert.equal(change(f.c,'b',now+2000,5),true)
+ assert.equal(change(f.c,'c',now+3000,-4),true)
+ assert.equal(change(f.c,'d',now+4000,-5),true)
+ assert.equal(change(f.c,'e',now+5000,2),true)
+ assert.equal(f.c.affection.score,1)
  assert.equal(affectionProgress(f.other.affection).score,0)
  assert.equal(f.c.updatedAt,revision)
+ for(const delta of [0,6,-6,1.5,NaN])assert.throws(()=>change(f.c,'invalid',now+6000,delta),/参数无效/)
+ assert.throws(()=>change(f.c,'old',now-1,1),/过期/)
  f.c.characterCard.affectionEnabled=false
- assert.throws(()=>change(f.c,'paused',now+30*3600000),/暂停/)
+ assert.throws(()=>change(f.c,'paused',now+6000),/暂停/)
  assert.equal(renderAffection(f.c,true),'')
 })
 test('eleven bidirectional stages, saturation and positive probability even at negative extreme',()=>{
  const f=fixture()
  for(const [score,level] of [[-100,1],[-75,2],[-50,3],[-25,4],[-10,5],[0,6],[10,7],[25,8],[45,9],[70,10],[90,11],[100,11]])assert.equal(affectionProgress({score}).level,level)
- for(const [initial,delta,expected] of [[99,1,100],[-99,-3,-100]]) {
+ for(const [initial,delta,expected] of [[99,5,100],[-99,-5,-100]]) {
   f.c.affection={score:initial,updatedAt:1,lastAwardAt:0,lastTurnId:'old'}
   assert.equal(change(f.c,'edge',now,delta),true);assert.equal(f.c.affection.score,expected)
-  assert.equal(change(f.c,'more',now+AFFECTION_INTERVAL,delta),false)
+  assert.equal(change(f.c,'more',now+3600000,delta),false)
  }
  f.c.idleContact={enabled:true,routeId:'owner',idleMinutes:30}
  const last={id:'u',at:now-60000}
@@ -123,7 +119,7 @@ test('affection tool verifies current user evidence, audience, revocation and ne
  const call=patch=>tool.execute({action:'adjust',delta:-1,reason:'当前互动让角色有些不舒服',evidence:'我是哥哥',...patch},exec)
  await assert.rejects(call({evidence:'从来没说过的话'}),/原文/)
  assert.equal(f.c.affection,undefined)
- await assert.rejects(call({delta:3}),/参数无效/)
+ await assert.rejects(call({delta:6}),/参数无效/)
  assert.equal((await call()).applied,true);assert.equal(f.c.affection.score,-1)
  assert.equal((await call()).applied,false)
  events=[{type:'turn/start',seq:3},{...user('g'),seq:4}]
