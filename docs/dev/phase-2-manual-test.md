@@ -12,7 +12,7 @@
 4. 如有微信测试账号，可检查 `get_updates_buf` 与消息事件同时持久化。
 5. 未批准联系人的消息只产生 `filtered` 元数据记录，正文和附件不写入 Inbox。
 
-本轮自动自测已先行完成：`npm run build` 通过；Durable Inbox、微信续读和 Mattermost 通道回归测试共 39/39 通过；`npm run pack:check` 通过。真实服务器/浏览器步骤由测试者按下面流程执行。
+本轮自测：`npm run build` 通过；Durable Inbox、微信续读和 Mattermost 通道回归测试共 39/39 通过；`npm run pack:check` 通过。另在隔离的本地 DSH 中确认从 `web` 模板安装后，服务启动且不再报告 `agentPresets` / `workspaceRegistry` 缺失。真实 Mattermost 收件由测试者按下面流程验收。
 
 ## 2. 预备条件
 
@@ -29,13 +29,23 @@
 $env:DSH_HOME = 'D:\dsh-home-yly-mm-wx-up-p2'
 $repo = 'D:\yliyun_project\dsh-partner-yly-mm-wx-up'
 
-# 初始化一个独立 Profile 并从当前本地源码安装插件
+# 先用 web 模板创建带 Web App、Agent preset 和 Workspace 服务的 Profile。
+# 如果这个专用测试 Profile 已由旧步骤建成，下面会重建它；不要对 yly-dev 等现有 Profile 执行。
+dsh --profile yly-mm-wx-up-p2 --from-default-profile web --dump-config *> $null
+
+# 再把本地分支加进该 Profile
 dsh plugin --profile yly-mm-wx-up-p2 add $repo
+
+# 确认 Profile 同时包含 web-app 和伙伴插件
+(Get-Content "$env:DSH_HOME\profiles\yly-mm-wx-up-p2\package.json" -Raw | ConvertFrom-Json).dsh.profile.bundles
 ```
+
+最后一条命令应列出 `@deepseek-ai/dsh-base`、`@deepseek-ai/dsh-web-app` 和 `@lemoncat7/dsh-partner`。**不要只运行 `dsh plugin ... add` 来创建新 Profile**：新建的最小 Profile 可能只有 `dsh-base` 和伙伴插件，缺少伙伴等待的 DSH 服务，启动时就会出现 `pending (waiting for services: agentPresets, workspaceRegistry)`。
 
 如 PowerShell 找不到 `dsh` 命令，可用当前机器的 CLI 入口替代：
 
 ```powershell
+node 'C:\nvm4w\nodejs\node_modules\@deepseek-ai\dsh\lib\bin.js' --profile yly-mm-wx-up-p2 --from-default-profile web --dump-config *> $null
 node 'C:\nvm4w\nodejs\node_modules\@deepseek-ai\dsh\lib\bin.js' plugin --profile yly-mm-wx-up-p2 add $repo
 ```
 
@@ -51,13 +61,18 @@ Get-NetTCPConnection -LocalPort 43129 -ErrorAction SilentlyContinue
 
 ## 4. 启动并连接 Mattermost DM
 
-启动隔离 Profile：
+为了不在源码目录生成默认伙伴 workspace，先把工作目录切到隔离 DSH_HOME，再启动 Profile：
 
 ```powershell
+Push-Location $env:DSH_HOME
 node 'C:\nvm4w\nodejs\node_modules\@deepseek-ai\dsh\lib\bin.js' --profile yly-mm-wx-up-p2 --no-open --host 127.0.0.1 --port 43129
+# 在 DSH 进程按 Ctrl+C 停止后，返回原目录
+Pop-Location
 ```
 
-在浏览器打开 `http://127.0.0.1:43129/`，确认 DSH 页面可以加载，伙伴插件已启用且没有 `statePath` 校验错误。通过插件设置添加 Mattermost DM 渠道，使用测试服务器和凭据完成连接，并批准当前测试用户。不要复用现有 Profile 的本地 state 文件。
+DSH 启动后会输出带本机临时访问 token 的页面地址，例如 `http://127.0.0.1:43129/?token=…`。在同一台机器的浏览器打开终端输出的**完整地址**；不要把 query token 写入手册、Plane 或截图。裸地址可能返回 HTTP 401，这是访问认证，不代表服务未启动。
+
+确认 DSH 页面加载，且启动输出没有 `Failed to load plugins`、`pending (waiting for services: agentPresets, workspaceRegistry)` 或 `statePath` 校验错误。通过插件设置添加 Mattermost DM 渠道，使用测试服务器和凭据完成连接，并批准当前测试用户。不要复用现有 Profile 的本地 state 文件。
 
 等待连接进入运行状态至少 15 秒，让首次同步建立 Mattermost 高水位。首次同步会跳过历史帖子。
 
