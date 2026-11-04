@@ -47,6 +47,9 @@ import { continuationFinalReply } from '../scheduler/final-reply.js'
 import { savedContinuationRoute } from '../scheduler/channel-origin.js'
 import { prepareChannelReply } from './outbound-media.js'
 import { questionOrigin } from './question-origin.js'
+import type { DurableInbox } from '../inbox/durable-inbox.js'
+import { weixinInboxItem, mattermostInboxItem } from '../inbox/channel-events.js'
+import { legacyMattermostHighWatermark, mattermostHighWatermark, mattermostSinceCursor } from '../inbox/mattermost-cursor.js'
 import type { AttachmentDeliveryService } from '../attachments/service.js'
 import { requirementAttachments } from '../requirements/attachments.js'
 export { isAutonomousDeliveryTurn } from './delivery-policy.js'
@@ -96,6 +99,7 @@ export class ChannelManager {
     private readonly credentials: PartnerCredentialVault,
     private readonly agents: PartnerAgentRuntime,
     private readonly defaultCwd: string,
+    private readonly durableInbox?: DurableInbox,
   ) { this.notificationDelivery = new NotificationDelivery(store);this.groupAutonomy=new QqGroupAutonomy(ctx) }
 
   attachQuestionAnswerer(agentCtx: Context, route: ChannelSession): () => void {
@@ -616,6 +620,27 @@ export class ChannelManager {
   }
 
   private async pollLoop(channel: WeixinChannel, api: WeixinApi, signal: AbortSignal): Promise<void> {
+    if (this.durableInbox) {
+      const cursor = this.durableInbox.cursors.get(channel.id)
+      if (cursor && (cursor.platform !== 'weixin' || cursor.cursorType !== 'opaque-buffer')) throw new Error('微信 Durable Inbox cursor 类型不匹配')
+      const saved = cursor ? JSON.parse(cursor.cursorJson) as { buffer?: unknown } : undefined
+      if (saved && typeof saved.buffer !== 'string') throw new Error('微信 Durable Inbox buffer 格式无效')
+      await pollWeixin(signal, {
+        ...(saved ? { initialBuffer: saved.buffer as string } : {}),
+        getUpdates: (buffer, timeoutMs, lifetime) => api.getUpdates(buffer, timeoutMs, lifetime),
+        state: state => { this.runtime.set(channel.id, state) },
+        receive: async (response, nextBuffer) => {
+          const state = this.store.snapshot(), receivedAt = Date.now()
+          const items = (response.msgs ?? []).map(message => weixinInboxItem(channel, message,
+            userId => channelReplyAllowed(state, channel.id, userId), receivedAt))
+          this.durableInbox!.events.persistPage(items, {
+            channelConfigId: channel.id, platform: 'weixin', cursorType: 'opaque-buffer',
+            cursorJson: JSON.stringify({ buffer: nextBuffer }), updatedAt: receivedAt,
+          })
+        },
+      })
+      return
+    }
     await pollWeixin(signal, {
       getUpdates: (buffer, timeoutMs, lifetime) => api.getUpdates(buffer, timeoutMs, lifetime),
       state: state => { this.runtime.set(channel.id, state) },
@@ -856,6 +881,15 @@ export class ChannelManager {
     if (!channel.direct || !channel.platform || channel.platform==='weixin') throw new Error('渠道配置无效')
     const credential = await this.credentials.read(channel.id)
     const api = new DirectTransport({platform:channel.platform,baseUrl:credential.baseUrl,targetId:channel.direct.targetId,...(channel.qq?{qq:channel.qq}:{})},credential.botToken,{accountId:channel.accountId,peerId:channel.direct.peerId})
+    if (channel.platform === 'mattermost' && this.durableInbox) {
+      this.directTransports.set(channel.id, api)
+      try { await this.pollMattermostInbox(channel, api, outerSignal) }
+      finally {
+        api.close()
+        if (this.directTransports.get(channel.id) === api) this.directTransports.delete(channel.id)
+      }
+      return
+    }
     this.directTransports.set(channel.id,api)
     const failure=new AbortController()
     const signal=AbortSignal.any([outerSignal,failure.signal])
@@ -929,6 +963,49 @@ export class ChannelManager {
       if(this.directDispatchers.get(channel.id)===dispatcher)this.directDispatchers.delete(channel.id)
     }
     if(dispatchError&&!outerSignal.aborted)throw new DirectDeliveryError()
+  }
+
+  /** Persist Mattermost DM pages and their high-watermark before the poll loop continues. Phase 3 adds a consumer. */
+  private async pollMattermostInbox(channel: WeixinChannel, api: DirectTransport, signal: AbortSignal): Promise<void> {
+    if (!channel.direct || channel.platform !== 'mattermost' || !this.durableInbox) throw new Error('Mattermost Durable Inbox is unavailable')
+    let failures = 0
+    const existing = this.durableInbox.cursors.get(channel.id)
+    if (!existing) {
+      const legacy = legacyMattermostHighWatermark(channel.direct.cursor)
+      if (legacy !== undefined) this.durableInbox.cursors.commit({
+        channelConfigId: channel.id, platform: 'mattermost', cursorType: 'timestamp',
+        cursorJson: JSON.stringify({ sinceMs: legacy }), highWatermark: legacy, updatedAt: Date.now(),
+      })
+    }
+    while (!signal.aborted) {
+      try {
+        const previous = this.durableInbox.cursors.get(channel.id)
+        const batch = await api.poll(mattermostSinceCursor(previous), signal, 0)
+        const highWatermark = mattermostHighWatermark(batch.cursor, previous?.highWatermark)
+        const receivedAt = Date.now(), state = this.store.snapshot()
+        const items = batch.messages.map(message => mattermostInboxItem(channel, message,
+          userId => channelReplyAllowed(state, channel.id, userId), receivedAt))
+        this.durableInbox.events.persistPage(items, {
+          channelConfigId: channel.id, platform: 'mattermost', cursorType: 'timestamp',
+          cursorJson: JSON.stringify({ sinceMs: highWatermark }), highWatermark, updatedAt: receivedAt,
+        })
+        failures = 0
+        this.runtime.set(channel.id, { status: 'running' })
+        await delay(10_000, signal)
+      } catch (error) {
+        if (signal.aborted) return
+        if (error instanceof ChannelHttpError && [401, 403].includes(error.status)) throw error
+        failures = Math.min(failures + 1, 30)
+        if (failures >= 6) throw error
+        const reason = error instanceof ChannelHttpError ? `HTTP ${error.status}`
+          : error instanceof Error && error.message === 'fetch failed' ? '网络连接失败，请检查地址、端口和容器 DNS'
+          : error instanceof Error && error.name === 'TimeoutError' ? '服务器请求超时'
+          : error instanceof Error ? error.message : '连接异常'
+        const waitMs = Math.min(60_000, 2000 * 2 ** failures)
+        this.runtime.set(channel.id, { status: 'starting', lastError: `${reason}（自动重连 ${failures}/6）` })
+        await delay(Math.max(error instanceof ChannelHttpError ? error.retryAfterMs : 0, waitMs), signal)
+      }
+    }
   }
 
   private async qqSessionName(channel:WeixinChannel,api:DirectTransport,event:DirectMessage,signal:AbortSignal):Promise<string> {

@@ -36,6 +36,8 @@
   },
   "files": [
     "src/inbox/migrations/*.sql",
+    "docs/dev/phase-2-manual-test.md",
+    "docs/dev/phase-2-durable-inbox.md",
     "docs/dev/phase-1-data-model.md",
     "docs/releases/2.24.1.md",
     "docs/releases/2.23.54.md",

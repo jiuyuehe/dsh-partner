@@ -67,6 +67,7 @@ import { syncStorageNotice } from './storage/notice.js'
 import { readStorageConfig } from './storage/bootstrap.js'
 import { SplitStatePersistence } from './storage/split-state.js'
 import { acquireStorageLease } from './storage/lease.js'
+import { DurableInbox } from './inbox/durable-inbox.js'
 
 export const Config = ConfigSchema
 export type Config = PartnerConfig
@@ -102,6 +103,8 @@ export function apply(context: Context, config: PartnerConfig): void {
       restart:()=>ctx.fiber.restart(),report:error=>ctx.logger.warn(`存储迁移后重载失败：${String(error)}`),
     })
     const inbox = migrated ? await PartnerInboxStore.openPartitioned(join(layout.publicRoot,'indexes','inbox.sqlite'),layout.privateRoot) : await PartnerInboxStore.open(join(dirname(resolved.statePath), 'partner-inbox.sqlite'))
+    const durableInbox = await DurableInbox.open(join(dirname(resolved.statePath), 'partner-channel-inbox.sqlite'))
+    ctx.effect(() => () => durableInbox.close(), 'dsh-partner.channel-inbox')
     const notices = new PartnerNoticeService(store, inbox, error => ctx.logger.warn(`dsh-partner inbox: ${error instanceof Error ? error.message : String(error)}`))
     ctx.effect(() => () => { notices.close(); inbox.close() }, 'dsh-partner.inbox')
     syncStorageNotice(inbox, storageConfig.storageVersion, TARGET_STORAGE_VERSION)
@@ -166,7 +169,7 @@ export function apply(context: Context, config: PartnerConfig): void {
     const sleep = new SleepService(ctx, store, memory, { busy: (id, exceptSessionId) => agents.companionActivity(id).some(a => a.kind !== 'memory' && a.kind !== 'observation' && (!exceptSessionId || a.sessionId !== exceptSessionId)), archived: id => ctx.workspaceRegistry.archivedSessionIds.includes(id as import('@deepseek-ai/dsh-session').SessionId) })
     agents.setSleepService(sleep)
     composer.setSleepToolFactory(id => sleep.tool(id))
-    const channels = new ChannelManager(ctx, store, credentials, agents, resolved.defaultCwd)
+    const channels = new ChannelManager(ctx, store, credentials, agents, resolved.defaultCwd, durableInbox)
     scheduler.continuations.configure({
       execute: (entry, _companion, signal) => agents.wakeSchedule(entry, signal),
       notify: entry => channels.notifyContinuation(entry),
@@ -284,6 +287,7 @@ export function apply(context: Context, config: PartnerConfig): void {
       reflection.close()
       persona.close()
       await Promise.all([memoryWorker.close(),scheduler.close(),heartbeat.close(),dailyReview.close(),channels.close()])
+      durableInbox.close()
       await agents.close()
       await mcp.close()
       await executor.close()

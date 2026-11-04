@@ -13,7 +13,7 @@
 - `ConversationRoute` 是目标路由模型，不扩展旧 `ChannelSession` 或 `PartnerState`。查询只能按 `ConversationKey` 精确命中；重复 Key 被视为存储完整性错误。Session 路由和 Memory Scope 是两条独立轴。
 - Memory 默认使用 `conversationKey` 隔离。`channel` 与 `companion` 只有显式选择时才共享；共享 Memory 不改变 Session 路由。
 - `SessionId`、`SubagentId`、`JobId`、`GoalId`、`RunId`、`ExternalEventId`、`BatchId` 等使用 TS 品牌类型，运行时仍是普通字符串，JSON 格式不变。
-- SQLite migration 是 Phase 1 的独立 schema 草案；Phase 2 才会增加 provider、repository、游标事务、租约和 worker。up/down SQL 不会被当前插件启动流程调用。
+- SQLite schema 在 Phase 1 以迁移草案交付；Phase 2 的 `InboxSqliteProvider` 开始在启动时应用版本化 up migration。down migration 仍只用于尚未投入使用数据库的受控回滚。
 
 ## 规范化事件与出站目标
 
@@ -74,8 +74,8 @@ Outbox 独立记录 `pending -> sending -> sent | failed | unknown`。网络结�
 | P1-06 | `memory-scope.ts`；默认会话隔离，显式 channel/companion 模式共享 |
 | P1-07 | 品牌 ID 与 TS 负向编译用例，验证 Session/Run/Subagent/Job 不可混用 |
 
-## 前置门槛与未覆盖项
+## 阶段交接说明
 
-Plane Phase 0 issue 尚未记录完成，且当前分支基线没有 `docs/dev/phase-0-baseline.md`。这轮按明确的 Phase 1 指令在隔离 worktree 继续，保留该前置门槛为未核验风险；不得据此将 Phase 0 或 Phase 1 标记为 PASS。P1 产物经用户审阅后才进入 Phase 2。
+本节最初记录的是 Phase 1 文档撰写时的状态。2026-11-04，用户确认 `docs/dev` 中 Phase 0 和 Phase 1 均已有完成记录，并明确授权开始 Phase 2；因此当时的前置门槛说明已过期。Phase 2 的实现与验证见 [`phase-2-durable-inbox.md`](phase-2-durable-inbox.md)。
 
 SPEC 的 `InboundAttachment` 字段没有给出具体结构；本阶段选择只存稳定附件 ID、文件名、媒体类型和大小，不包含媒体内容或可直接访问的 URL。

@@ -3,15 +3,16 @@ import type { GetUpdatesResponse } from './types.js'
 import { WeixinHttpError, WeixinResponseError, weixinAuthenticationFailure, weixinTransientFailure } from './errors.js'
 
 interface PollOptions {
+  initialBuffer?: string
   getUpdates(buffer: string, timeoutMs: number, signal: AbortSignal): Promise<GetUpdatesResponse>
-  receive(response: GetUpdatesResponse): void
+  receive(response: GetUpdatesResponse, nextBuffer: string): void | Promise<void>
   state(value: { status: 'starting' | 'running'; lastError?: string }): void
   wait?: (ms: number, signal: AbortSignal) => Promise<void>
 }
 
 /** Polling retries do not replay agent work or resend outgoing messages. */
 export async function pollWeixin(signal: AbortSignal, options: PollOptions): Promise<void> {
-  let buffer = '', timeoutMs = 35_000, failures = 0, permanentFailures = 0
+  let buffer = options.initialBuffer ?? '', timeoutMs = 35_000, failures = 0, permanentFailures = 0
   const wait = options.wait ?? ((ms, lifetime) => setTimeout(ms, undefined, { signal: lifetime }))
   while (!signal.aborted) {
     let response: GetUpdatesResponse
@@ -35,8 +36,10 @@ export async function pollWeixin(signal: AbortSignal, options: PollOptions): Pro
     if (signal.aborted) return
     failures = 0; permanentFailures = 0
     options.state({ status: 'running' })
-    if (response.get_updates_buf !== undefined) buffer = response.get_updates_buf
+    const nextBuffer = response.get_updates_buf ?? buffer
     if (response.longpolling_timeout_ms !== undefined && Number.isFinite(response.longpolling_timeout_ms)) timeoutMs = Math.min(120_000, Math.max(5000, response.longpolling_timeout_ms))
-    options.receive(response)
+    // The caller durably stores the page and its cursor before this poller adopts the cursor.
+    await options.receive(response, nextBuffer)
+    buffer = nextBuffer
   }
 }
