@@ -12,10 +12,10 @@ const archive = resolve(process.argv[2])
 const { size } = await stat(archive)
 assert.ok(size <= 10_000_000, `Package exceeds 10 MB: ${size} bytes; review bundled assets`)
 const { stdout } = await exec('tar', ['-tzf', archive], { maxBuffer: 8 * 1024 * 1024 })
-const paths = stdout.trim().split('\n')
+const paths = stdout.trim().split(/\r?\n/)
 assert.ok(paths.every(path => path.startsWith('package/') && !path.split('/').includes('..')))
 assert.ok(!paths.some(path => path.startsWith('package/resources/skills/novel-game-creation/upstream/examples/')), 'Optional example projects leaked into npm package')
-for (const file of ['lib/client.js', 'lib/client.pendant.js', 'lib/pendant-renderer.js', 'lib/index.js', 'cordis.patch.yml']) {
+for (const file of ['lib/client.js', 'lib/client.pendant.js', 'lib/pendant-renderer.js', 'lib/index.js', 'cordis.patch.yml', 'lib/inbox/index.js', 'lib/inbox/index.d.ts', 'docs/dev/phase-1-data-model.md', 'docs/releases/2.24.1.md', 'src/inbox/migrations/001-inbox-schema.up.sql', 'src/inbox/migrations/001-inbox-schema.down.sql']) {
   assert.ok(paths.includes('package/' + file), `Missing runtime file: ${file}`)
 }
 const root = await mkdtemp(join(tmpdir(), 'partner-package-check-'))

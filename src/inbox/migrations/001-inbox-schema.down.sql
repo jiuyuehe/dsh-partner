@@ -1,0 +1,9 @@
+DROP INDEX IF EXISTS idx_outbound_deliveries_status_updated;
+DROP INDEX IF EXISTS idx_message_batches_status_ready;
+DROP INDEX IF EXISTS idx_inbox_events_batch;
+DROP INDEX IF EXISTS idx_inbox_events_conversation_received;
+DROP INDEX IF EXISTS idx_inbox_events_status_received;
+DROP TABLE IF EXISTS outbound_deliveries;
+DROP TABLE IF EXISTS channel_cursors;
+DROP TABLE IF EXISTS inbox_events;
+DROP TABLE IF EXISTS message_batches;
