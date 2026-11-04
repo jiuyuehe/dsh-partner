@@ -1,4 +1,5 @@
 import { createSnapshotCache } from './snapshot-cache.js'
+import type { ChannelDiagnostic } from './channels/diagnostics.js'
 export const PARTNER_API = '/partner-local/v1'
 
 export type { CompanionCapability as Capability } from './capabilities.js'
@@ -84,6 +85,7 @@ export interface ConcernSourceView { kind: 'file' | 'knowledge' | 'note'; label:
 export interface PresetView { id: string; name: string; broken?: string }
 export interface ModelCatalogView { providers: Array<{ id: string; name: string; models: Array<{ id: string; name: string }> }>; defaultSelection: { provider: string; model: string } }
 export interface PartnerSnapshot {
+  channelDiagnostics?: ChannelDiagnostic[]
   pushChannels?: import('./notifications/push-domain.js').PushChannelView[]
   companions: CompanionView[]; channels: ChannelView[]; pairings: PairingView[]; sessions: ChannelSessionView[]; heartbeatStates: HeartbeatStateView[]; presets: PresetView[]
 }

@@ -12,7 +12,7 @@ import { readStorageConfig } from '../lib/storage/bootstrap.js'
 test('migration POST is accepted without waiting; status remains readable while gated and after restart',async()=>{
  const root=await mkdtemp(join(tmpdir(),'storage-api-')),statePath=join(root,'state.json'),store=await PartnerStore.open(statePath)
  let proceed,finish,restarts=0;const paused=new Promise(r=>proceed=r),finished=new Promise(r=>finish=r)
- const runtime={store}
+ const runtime={store,connection:{requestRejection:()=>undefined}}
  const ports={busy:()=>false,snapshot:()=>store.snapshot(),quiesce:async()=>{await paused;await store.freeze()},report:error=>finish(error),restart:async()=>{restarts++;runtime.storage=new StorageCoordinator(statePath,root,1,ports);finish()}}
  runtime.storage=new StorageCoordinator(statePath,root,0,ports)
  let handler;registerPartnerApi({register:r=>{handler=r.handler;return()=>{}}},'/api',runtime)

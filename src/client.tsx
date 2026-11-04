@@ -30,6 +30,7 @@ import { CompanionPicker } from './ui/companion-picker.js'
 import { api, loadPartner, cachedPartner, type ChannelView, type CompanionView, type LoginView, type PartnerSnapshot } from './client-api.js'
 import { useWorkspaceTopAnchor } from './sidebar-anchor.js'
 import { pendingStorageRecovery } from './ui/storage-recovery-marker.js'
+import { observeChannelDiagnostics } from './ui/use-channel-status.js'
 
 import { GlassSurface } from './glass-surface.js'
 import { SkillsPanel } from './ui/skills-panel.js'
@@ -73,6 +74,7 @@ export function apply(ctx: ClientContext): void {
   registerDecisionCards(ctx)
   registerChatReplies(ctx)
   ctx.effect(installStyles, 'dsh-partner: styles')
+  ctx.effect(observeChannelDiagnostics, 'dsh-partner: local channel diagnostics')
   const controller = createPartnerController(ctx, PLUGIN_ID, (props, current) => <PartnerWorkspace {...props} controller={current} />)
   if(pendingStorageRecovery()!==undefined)controller.open(undefined,{page:'general'})
   ctx.slots.inject('shell.overlay', () => ctx.slots.register({ name: 'shell.overlay', id: 'partner-pendant', order: 30 }, () => <PartnerPendant controller={controller} />))

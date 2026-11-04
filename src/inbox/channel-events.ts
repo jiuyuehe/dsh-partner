@@ -87,7 +87,8 @@ export function mattermostInboxItem(
 ): InboxPageItem {
   const accountId = requiredId(channel.accountId, 'Mattermost accountId')
   const channelConfigId = requiredId(channel.id, 'Mattermost channelConfigId')
-  const channelId = requiredId(channel.direct?.targetId, 'Mattermost DM channel ID')
+  // 自动发现 DM 时，传输层已验证的消息来源比固定配置 targetId 更准确。
+  const channelId = requiredId(message.targetId ?? channel.direct?.targetId, 'Mattermost DM channel ID')
   const actorId = requiredId(message.sender, 'Mattermost sender ID')
   const externalMessageId = requiredId(message.id, 'Mattermost post ID')
   const accepted = isApproved(actorId)

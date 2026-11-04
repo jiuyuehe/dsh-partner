@@ -52,6 +52,7 @@ import { weixinInboxItem, mattermostInboxItem } from '../inbox/channel-events.js
 import { legacyMattermostHighWatermark, mattermostHighWatermark, mattermostSinceCursor } from '../inbox/mattermost-cursor.js'
 import type { AttachmentDeliveryService } from '../attachments/service.js'
 import { requirementAttachments } from '../requirements/attachments.js'
+import { ChannelDiagnosticBuffer, type ChannelDiagnostic, type ChannelDiagnosticInput } from './diagnostics.js'
 export { isAutonomousDeliveryTurn } from './delivery-policy.js'
 
 type ChannelContext = Context & { settings: SettingsForms }
@@ -75,6 +76,7 @@ interface RuntimeState {
 }
 
 export class ChannelManager {
+  private readonly diagnosticBuffer = new ChannelDiagnosticBuffer()
   private qqNames = new Map<string,{name:string;expires:number}>()
   private readonly qqLatency=new QqLatencyHistory()
   private readonly groupAutonomy:QqGroupAutonomy
@@ -222,6 +224,11 @@ export class ChannelManager {
     }))
   }
 
+  /** 浏览器调试页从现有渠道状态响应中读取近期收件诊断。 */
+  channelDiagnostics(): ChannelDiagnostic[] { return this.diagnosticBuffer.recent() }
+
+  private diagnose(input: ChannelDiagnosticInput): void { this.diagnosticBuffer.record(input) }
+
   private idleDeliveryStatus(channelId:string):{idleDelivery?:string} {
     const pending=(this.store.snapshot().notificationDeliveries??[]).filter(r=>r.targets.some(t=>t.channelId===channelId)&&r.id.includes('"idle:')).sort((a,b)=>b.createdAt-a.createdAt)[0]
     if(!pending||pending.completedAt)return {}
@@ -245,6 +252,13 @@ export class ChannelManager {
     this.startChatRecovery()
     if (this.tasks.has(channelId)) return
     const channel = requiredChannel(this.store, channelId)
+    // 兼容旧版 P2 只写入 filtered 事件、未创建待审批联系人的缺口。
+    if (this.durableInbox) {
+      try { await this.restoreRecentPairingRequests(channel) }
+      catch (error) {
+        this.diagnose({ level: 'error', platform: channel.platform ?? 'weixin', channelId, phase: 'pairing-recovery-error', detail: error instanceof Error ? error.message : String(error) })
+      }
+    }
     if ((!channel.platform || channel.platform === 'weixin') && this.store.snapshot().channels.some(c => c.id !== channelId && c.companionId === channel.companionId && (!c.platform || c.platform === 'weixin') && c.enabled)) {
       this.runtime.set(channelId, { status: 'error', lastError: '此伙伴有多个微信渠道启用，请先停用其他渠道，再重新扫码连接需要保留的渠道' })
       return
@@ -252,6 +266,7 @@ export class ChannelManager {
     const credential = await this.credentials.read(channelId)
     const controller = new AbortController()
     this.runtime.set(channelId, { status: 'starting' })
+    this.diagnose({ level: 'log', platform: channel.platform ?? 'weixin', channelId, phase: 'channel-starting', detail: '开始连接并接收渠道消息。' })
     const task = (channel.platform && channel.platform !== 'weixin'
       ? this.directLoop(channel, controller.signal)
       : this.pollLoop(channel, new WeixinApi(credential.baseUrl, credential.botToken), controller.signal))
@@ -259,10 +274,69 @@ export class ChannelManager {
         if (!controller.signal.aborted) {
           const message = error instanceof Error ? error.message : String(error)
           this.runtime.set(channelId, { status: 'error', lastError: message })
+          this.diagnose({ level: 'error', platform: channel.platform ?? 'weixin', channelId, phase: 'channel-stopped', detail: message })
           this.ctx.logger.error(`dsh-partner: ${channel.platform ?? 'weixin'} channel ${channelId} stopped: ${message}`)
         }
       }).finally(() => { this.tasks.delete(channelId) })
     this.tasks.set(channelId, { controller, task })
+  }
+
+  private async restoreRecentPairingRequests(channel: WeixinChannel): Promise<void> {
+    if (!this.durableInbox || !channel.enabled) return
+    const cutoff = Date.now() - 60 * 60 * 1000
+    // 只恢复最近一小时的脱敏过滤记录，不把旧的历史联系人重新开放。
+    for (const event of this.durableInbox.events.listEvents('filtered', 1000)) {
+      if (event.channelConfigId !== channel.id || event.receivedAt < cutoff || event.payload.isBotMessage) continue
+      const targetId = event.platform === 'mattermost' ? event.payload.channelId ?? event.payload.conversationId : undefined
+      const { request, created } = await this.ensurePendingPairing(
+        channel,
+        event.payload.actorId,
+        event.payload.actorName ?? (event.platform === 'weixin' ? shortIdentity(event.payload.actorId) : event.payload.actorId),
+        targetId,
+      )
+      if (created && request) this.diagnose({
+        level: 'warn', platform: event.platform, channelId: channel.id, phase: 'pairing-recovered',
+        detail: '从近期已脱敏收件记录恢复待批准联系人；请在渠道设置中核对并批准。',
+        messageId: event.externalMessageId, conversationId: event.payload.conversationId, senderId: event.payload.actorId,
+      })
+    }
+  }
+
+  private async ensurePendingPairing(
+    channel: WeixinChannel,
+    userId: string,
+    displayName: string,
+    directTargetId?: string,
+  ): Promise<{ request?: PairingRequest; created: boolean }> {
+    let request: PairingRequest | undefined
+    let created = false
+    await this.store.update(state => {
+      if (!state.channels.some(item => item.id === channel.id && item.enabled)) return
+      const existing = state.pairings.find(item => item.channelId === channel.id && item.userId === userId)
+      if (existing) {
+        // 仅为旧版空目标的 pending 请求补上经过收件验证的 DM ID。
+        if (existing.status === 'pending' && !existing.directTargetId && directTargetId) {
+          existing.directTargetId = directTargetId
+          existing.updatedAt = Date.now()
+        }
+        request = existing
+        return
+      }
+      if (state.pairings.filter(item => item.channelId === channel.id).length >= 100) throw new Error('配对请求已达上限，请在面板清理')
+      const now = Date.now()
+      request = {
+        id: `pairing-${randomBytes(10).toString('hex')}`,
+        channelId: channel.id,
+        userId,
+        displayName: displayName.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 120) || userId,
+        ...(directTargetId ? { directTargetId } : {}),
+        pairingCode: randomBytes(4).toString('hex').toUpperCase(),
+        status: 'pending', createdAt: now, updatedAt: now,
+      }
+      state.pairings.push(request)
+      created = true
+    })
+    return { ...(request ? { request } : {}), created }
   }
 
   async stop(channelId: string): Promise<void> {
@@ -628,31 +702,95 @@ export class ChannelManager {
       await pollWeixin(signal, {
         ...(saved ? { initialBuffer: saved.buffer as string } : {}),
         getUpdates: (buffer, timeoutMs, lifetime) => api.getUpdates(buffer, timeoutMs, lifetime),
-        state: state => { this.runtime.set(channel.id, state) },
+        state: state => {
+          this.runtime.set(channel.id, state)
+          if (state.lastError) this.diagnose({ level: 'warn', platform: 'weixin', channelId: channel.id, phase: 'poll-retrying', detail: state.lastError })
+        },
         receive: async (response, nextBuffer) => {
-          const state = this.store.snapshot(), receivedAt = Date.now()
-          const items = (response.msgs ?? []).map(message => weixinInboxItem(channel, message,
-            userId => channelReplyAllowed(state, channel.id, userId), receivedAt))
-          this.durableInbox!.events.persistPage(items, {
-            channelConfigId: channel.id, platform: 'weixin', cursorType: 'opaque-buffer',
-            cursorJson: JSON.stringify({ buffer: nextBuffer }), updatedAt: receivedAt,
-          })
+          const messages = response.msgs ?? []
+          this.diagnose({ level: 'log', platform: 'weixin', channelId: channel.id, phase: 'poll-page', detail: `微信 get_updates 收到 ${messages.length} 条消息。`, metadata: { messageCount: messages.length, bufferLength: nextBuffer.length } })
+          for (const message of messages) this.diagnoseWeixinMessage(channel, message)
+          try {
+            const state = this.store.snapshot(), receivedAt = Date.now()
+            const items = messages.map(message => weixinInboxItem(channel, message,
+              userId => channelReplyAllowed(state, channel.id, userId), receivedAt))
+            for (let index = 0; index < items.length; index++) {
+              const item = items[index]!
+              const message = messages[index]!
+              if (item.status !== 'filtered' || item.envelope.isBotMessage) continue
+              const { request, created } = await this.ensurePendingPairing(channel, item.envelope.actorId, shortIdentity(item.envelope.actorId))
+              if (!created || !request) continue
+              this.diagnose({ level: 'warn', platform: 'weixin', channelId: channel.id, phase: 'pairing-pending', detail: '新联系人等待批准；未批准消息正文不会进入 Agent。', messageId: item.envelope.externalMessageId, conversationId: item.envelope.conversationId, senderId: item.envelope.actorId })
+              try {
+                await api.sendText(item.envelope.actorId, this.pairingPrompt(request), message.context_token, signal)
+                this.diagnose({ level: 'log', platform: 'weixin', channelId: channel.id, phase: 'pairing-notice-sent', detail: '配对审批提示已发送。', messageId: item.envelope.externalMessageId, conversationId: item.envelope.conversationId, senderId: item.envelope.actorId })
+              } catch (error) {
+                this.diagnose({ level: 'error', platform: 'weixin', channelId: channel.id, phase: 'pairing-notice-error', detail: error instanceof Error ? error.message : String(error), messageId: item.envelope.externalMessageId, conversationId: item.envelope.conversationId, senderId: item.envelope.actorId })
+              }
+            }
+            const result = this.durableInbox!.events.persistPage(items, {
+              channelConfigId: channel.id, platform: 'weixin', cursorType: 'opaque-buffer',
+              cursorJson: JSON.stringify({ buffer: nextBuffer }), updatedAt: receivedAt,
+            })
+            this.diagnose({ level: 'log', platform: 'weixin', channelId: channel.id, phase: 'inbox-persisted', detail: '微信收件页已与 get_updates_buf 一起提交。', metadata: { inserted: result.inserted, duplicate: result.duplicate } })
+          } catch (error) {
+            this.diagnose({ level: 'error', platform: 'weixin', channelId: channel.id, phase: 'inbox-error', detail: error instanceof Error ? error.message : String(error), metadata: { messageCount: messages.length } })
+            throw error
+          }
         },
       })
       return
     }
     await pollWeixin(signal, {
       getUpdates: (buffer, timeoutMs, lifetime) => api.getUpdates(buffer, timeoutMs, lifetime),
-      state: state => { this.runtime.set(channel.id, state) },
-      receive: response => { for (const message of response.msgs ?? []) this.scheduleInbound(channel, api, message, signal) },
+      state: state => {
+        this.runtime.set(channel.id, state)
+        if (state.lastError) this.diagnose({ level: 'warn', platform: 'weixin', channelId: channel.id, phase: 'poll-retrying', detail: state.lastError })
+      },
+      receive: response => {
+        const messages = response.msgs ?? []
+        this.diagnose({ level: 'log', platform: 'weixin', channelId: channel.id, phase: 'poll-page', detail: `微信 get_updates 收到 ${messages.length} 条消息。`, metadata: { messageCount: messages.length } })
+        for (const message of messages) { this.diagnoseWeixinMessage(channel, message); this.scheduleInbound(channel, api, message, signal) }
+      },
     })
+  }
+
+  private diagnoseWeixinMessage(channel: WeixinChannel, message: WeixinRawMessage): void {
+    const text = extractText(message.item_list ?? [])
+    const eventId = stableEventId(message)
+    this.diagnose({
+      level: 'log', platform: 'weixin', channelId: channel.id, phase: 'message-received',
+      detail: '收到微信私聊事件。', ...(eventId ? { messageId: eventId } : {}),
+      ...(message.from_user_id ? { conversationId: message.from_user_id, senderId: message.from_user_id } : {}),
+      ...(text ? { textPreview: text } : {}),
+      metadata: { messageType: message.message_type ?? -1, itemTypes: (message.item_list ?? []).map(item => item.type ?? -1).join(',') },
+    })
+  }
+
+  private diagnoseDirectMessage(channel: WeixinChannel, message: DirectMessage): void {
+    this.diagnose({
+      level: 'log', platform: channel.platform === 'weixin' || !channel.platform ? 'weixin' : channel.platform,
+      channelId: channel.id, phase: 'message-received', detail: '收到渠道私聊事件。', messageId: message.id,
+      ...(message.targetId ? { conversationId: message.targetId } : channel.direct?.targetId ? { conversationId: channel.direct.targetId } : {}),
+      senderId: message.sender, ...(message.text ? { textPreview: message.text } : {}),
+      metadata: { attachmentCount: message.media?.length ?? 0, messageTimestamp: message.timestamp ?? 0 },
+    })
+  }
+
+  private pairingPrompt(request: PairingRequest): string {
+    return `配对码：${request.pairingCode ?? '请在 DSH 渠道设置中查看'}\n请在「伙伴 → 渠道 → 配置」核对该码并批准联系人，然后重新发送消息。未批准前不会交给伙伴处理。`
   }
 
   private scheduleInbound(channel: WeixinChannel, api: WeixinApi, message: WeixinRawMessage, signal: AbortSignal): void {
     const operations = this.operations.get(channel.id) ?? new Set<Promise<void>>()
     this.operations.set(channel.id, operations)
     const operation = this.handleInbound(channel, api, message, signal).catch(error => {
-      if (!signal.aborted) this.ctx.logger.error(`dsh-partner: WeChat message ${stableEventId(message) ?? 'unknown'} failed: ${error instanceof Error ? error.message : String(error)}`)
+      if (!signal.aborted) {
+        const detail = error instanceof Error ? error.message : String(error)
+        const eventId = stableEventId(message)
+        this.diagnose({ level: 'error', platform: 'weixin', channelId: channel.id, phase: 'message-processing-error', detail, ...(eventId ? { messageId: eventId } : {}), ...(message.from_user_id ? { conversationId: message.from_user_id, senderId: message.from_user_id } : {}) })
+        this.ctx.logger.error(`dsh-partner: WeChat message ${stableEventId(message) ?? 'unknown'} failed: ${detail}`)
+      }
     }).finally(() => { operations.delete(operation) })
     operations.add(operation)
   }
@@ -894,7 +1032,11 @@ export class ChannelManager {
     const failure=new AbortController()
     const signal=AbortSignal.any([outerSignal,failure.signal])
     let dispatchError:unknown
-    const dispatcher=new DirectDispatcher(signal,error=>{dispatchError=error;failure.abort()})
+    const dispatcher=new DirectDispatcher(signal,error=>{
+      dispatchError=error
+      this.diagnose({ level: 'error', platform: channel.platform!, channelId: channel.id, phase: 'message-processing-error', detail: error instanceof Error ? error.message : String(error) })
+      failure.abort()
+    })
     this.directDispatchers.set(channel.id,dispatcher)
     let cursor=channel.direct.cursor
     let failures=0
@@ -905,6 +1047,8 @@ export class ChannelManager {
         // OneBot sends text and media together in one event; Matrix needs lookahead.
         const batch=channel.platform==='qq'?initial:await collectDirectBatch(initial,(next,lifetime)=>api.poll(next,lifetime,0),signal)
         if(signal.aborted)break
+        this.diagnose({ level: 'log', platform: channel.platform, channelId: channel.id, phase: 'poll-page', detail: `${channel.platform} 收件轮询返回 ${batch.messages.length} 条消息。`, metadata: { messageCount: batch.messages.length } })
+        for (const message of batch.messages) this.diagnoseDirectMessage(channel, message)
         if(batch.warning)roomWarning=batch.warning
         else if(batch.messages.length)roomWarning=undefined
         this.runtime.set(channel.id,{status:'running',...(roomWarning?{lastError:roomWarning}:{})})
@@ -930,7 +1074,10 @@ export class ChannelManager {
               finally { if(channel.platform==='qq')this.ctx.logger?.info?.(`[qq-latency] ${JSON.stringify({stage:'dispatch',queueMs:message.receivedAt===undefined?undefined:started-message.receivedAt,validateMs:validated-started,totalMs:Date.now()-(message.receivedAt??started)})}`) }
             },message.targetId||message.sender)
           }
-          catch { throw new DirectDeliveryError() }
+          catch(error) {
+            this.diagnose({ level: 'error', platform: channel.platform, channelId: channel.id, phase: 'message-validation-error', detail: error instanceof Error ? error.message : String(error), messageId: message.id, ...(message.targetId ? { conversationId: message.targetId } : {}), senderId: message.sender })
+            throw new DirectDeliveryError()
+          }
         }
         if(signal.aborted)break
         if(!dispatcher.busy)await this.store.update(state=>{
@@ -942,6 +1089,7 @@ export class ChannelManager {
         if(channel.platform!=='qq')await delay(channel.platform==='mattermost'?(dispatcher.busy?1000:10_000):1000,signal)
       } catch(error) {
         if(signal.aborted)break
+        this.diagnose({ level: 'error', platform: channel.platform, channelId: channel.id, phase: 'poll-error', detail: error instanceof Error ? error.message : String(error) })
         if(error instanceof OneBotError && !error.retryable)throw error
         if(error instanceof DirectDeliveryError || (error instanceof ChannelHttpError && [401,403].includes(error.status)))throw error
         const persistentRetry = channel.platform === 'qq' || channel.platform === 'matrix' && matrixTransientFailure(error)
@@ -981,19 +1129,43 @@ export class ChannelManager {
       try {
         const previous = this.durableInbox.cursors.get(channel.id)
         const batch = await api.poll(mattermostSinceCursor(previous), signal, 0)
+        this.diagnose({ level: 'log', platform: 'mattermost', channelId: channel.id, phase: 'poll-page', detail: `Mattermost DM 轮询返回 ${batch.messages.length} 条消息。`, metadata: { messageCount: batch.messages.length, hasCursor: Boolean(batch.cursor) } })
+        for (const message of batch.messages) this.diagnoseDirectMessage(channel, message)
         const highWatermark = mattermostHighWatermark(batch.cursor, previous?.highWatermark)
         const receivedAt = Date.now(), state = this.store.snapshot()
         const items = batch.messages.map(message => mattermostInboxItem(channel, message,
           userId => channelReplyAllowed(state, channel.id, userId), receivedAt))
-        this.durableInbox.events.persistPage(items, {
+        for (const item of items) {
+          if (item.status !== 'filtered' || item.envelope.isBotMessage) continue
+          const targetId = item.envelope.channelId
+          if (!targetId) continue
+          const { request, created } = await this.ensurePendingPairing(channel, item.envelope.actorId, item.envelope.actorName ?? item.envelope.actorId, targetId)
+          if (!created || !request) continue
+          this.diagnose({ level: 'warn', platform: 'mattermost', channelId: channel.id, phase: 'pairing-pending', detail: '新联系人等待批准；未批准消息正文不会进入 Agent。', messageId: item.envelope.externalMessageId, conversationId: targetId, senderId: item.envelope.actorId })
+          try {
+            // 自动发现模式必须用入站帖子携带的已验证 DM ID 回发配对提示。
+            const targetApi = api.forTarget(targetId, { accountId: channel.accountId, peerId: item.envelope.actorId }, () => {
+              const current = this.store.snapshot()
+              if (!current.channels.some(entry => entry.id === channel.id && entry.enabled)
+                || !current.pairings.some(entry => entry.channelId === channel.id && entry.userId === item.envelope.actorId && entry.status === 'pending' && entry.directTargetId === targetId)) throw new Error('配对请求或 Mattermost 渠道已变化，取消提示发送')
+            })
+            await targetApi.sendText(item.envelope.actorId, this.pairingPrompt(request), undefined, signal)
+            this.diagnose({ level: 'log', platform: 'mattermost', channelId: channel.id, phase: 'pairing-notice-sent', detail: '配对审批提示已发送到来源 DM。', messageId: item.envelope.externalMessageId, conversationId: targetId, senderId: item.envelope.actorId })
+          } catch (error) {
+            this.diagnose({ level: 'error', platform: 'mattermost', channelId: channel.id, phase: 'pairing-notice-error', detail: error instanceof Error ? error.message : String(error), messageId: item.envelope.externalMessageId, conversationId: targetId, senderId: item.envelope.actorId })
+          }
+        }
+        const result = this.durableInbox.events.persistPage(items, {
           channelConfigId: channel.id, platform: 'mattermost', cursorType: 'timestamp',
           cursorJson: JSON.stringify({ sinceMs: highWatermark }), highWatermark, updatedAt: receivedAt,
         })
+        this.diagnose({ level: 'log', platform: 'mattermost', channelId: channel.id, phase: 'inbox-persisted', detail: 'Mattermost 事件与高水位游标已一起提交。', metadata: { inserted: result.inserted, duplicate: result.duplicate, highWatermark } })
         failures = 0
         this.runtime.set(channel.id, { status: 'running' })
         await delay(10_000, signal)
       } catch (error) {
         if (signal.aborted) return
+        this.diagnose({ level: 'error', platform: 'mattermost', channelId: channel.id, phase: 'inbox-error', detail: error instanceof Error ? error.message : String(error) })
         if (error instanceof ChannelHttpError && [401, 403].includes(error.status)) throw error
         failures = Math.min(failures + 1, 30)
         if (failures >= 6) throw error

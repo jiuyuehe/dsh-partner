@@ -61,7 +61,7 @@ test('management API requires mutation header, detects stale writes, and setting
  const {Readable}=await import('node:stream');const {registerPartnerApi}=await import('../lib/api.js')
  const dir=await mkdtemp(join(tmpdir(),'agreements-api-'));t.after(()=>rm(dir,{recursive:true,force:true}))
  const store=await PartnerStore.open(join(dir,'state.json')),id=store.snapshot().companions[0].id
- let handler;registerPartnerApi({register:r=>{handler=r.handler;return()=>{}}},'/api',{store})
+ let handler;registerPartnerApi({register:r=>{handler=r.handler;return()=>{}}},'/api',{store,connection:{requestRejection:()=>undefined}})
  const call=async(body,path=`/api/companions/${id}/agreements`,headers={'x-dsh-partner-request':'1'})=>{
   const req=Object.assign(Readable.from([Buffer.from(JSON.stringify(body))]),{method:'PUT',url:path,headers}),res={statusCode:0,setHeader(){},end(data){this.body=data?JSON.parse(data):undefined}};await handler(req,res);return res
  }

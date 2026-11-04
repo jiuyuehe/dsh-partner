@@ -43,7 +43,7 @@ test('recovery API requires mutation header and exact receipt version, propagate
  const root=await mkdtemp(join(tmpdir(),'concern-recovery-api-'));t.after(()=>rm(root,{recursive:true,force:true}))
  const store=await PartnerStore.open(join(root,'state.json')),id=store.snapshot().companions[0].id
  let handler,conflict=false;const calls=[]
- registerPartnerApi({register:route=>{handler=route.handler;return()=>{}}},'/api',{store,concernExecution:{recover:async(...args)=>{calls.push(args);if(conflict)throw new Error('执行状态已变化，请刷新后再试')}}})
+ registerPartnerApi({register:route=>{handler=route.handler;return()=>{}}},'/api',{store,connection:{requestRejection:()=>undefined},concernExecution:{recover:async(...args)=>{calls.push(args);if(conflict)throw new Error('执行状态已变化，请刷新后再试')}}})
  const call=async(body,headers={'x-dsh-partner-request':'1'})=>{
    const req=Object.assign(Readable.from([Buffer.from(JSON.stringify(body))]),{method:'POST',url:`/api/companions/${id}/concerns/c/retry-execution`,headers})
    const res={statusCode:0,setHeader(){},end(data){this.body=data?JSON.parse(data):undefined}}

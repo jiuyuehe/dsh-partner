@@ -24,7 +24,7 @@ import { PartnerAgentRuntime, partnerCwd } from './agent-runtime.js'
 import { ChannelManager } from './channels/manager.js'
 import { ChannelAvatarService } from './channels/avatar-tool.js'
 import { WeixinLoginManager } from './channels/weixin/login.js'
-import { registerPartnerApi, type WebServerLike } from './api.js'
+import { registerPartnerApi, type ConnectionAccessLike, type WebServerLike } from './api.js'
 import { HeartbeatScheduler } from './heartbeat.js'
 import { PartnerMemoryStore } from './memory-store.js'
 import { MemoryReflectionService } from './memory-reflection.js'
@@ -82,6 +82,7 @@ type RuntimeContext = Context & {
   agentPresets: AgentPresets
   tools: ToolRuntime
   webServer?: WebServerLike
+  connection?: ConnectionAccessLike
   inject?(services: string[], callback: (ctx: RuntimeContext) => void): unknown
 }
 
@@ -253,15 +254,29 @@ export function apply(context: Context, config: PartnerConfig): void {
     const login = new WeixinLoginManager()
     let disposeApi: (() => void) | undefined
     let closing:Promise<void>|undefined
-    const mountApi = (runtime: RuntimeContext): void => {
-      if (!resolved.exposeWeb) return
+    const mountApi = (runtime: RuntimeContext): (() => void) | undefined => {
+      if (!resolved.exposeWeb) return undefined
       const webServer = runtime.webServer ?? runtime.get('webServer') as WebServerLike | undefined
       if (webServer === undefined) throw new Error('dsh-partner exposeWeb requires webServer')
-      disposeApi = registerPartnerApi(webServer, resolved.apiPrefix, { ctx, store, credentials, channels, agents, login, memory, concerns, heartbeat, concernExecution, dailyReview, skills, tasks, requirements, collaboration, scheduler, companions, inbox, deliveries, storage, mcp, push, stickers, sleep })
+      const connection = runtime.connection ?? runtime.get('connection') as ConnectionAccessLike | undefined
+      if (connection === undefined) throw new Error('dsh-partner exposeWeb requires connection')
+      const dispose = registerPartnerApi(webServer, resolved.apiPrefix, { ctx, store, credentials, channels, agents, login, memory, concerns, heartbeat, concernExecution, dailyReview, skills, tasks, requirements, collaboration, scheduler, companions, inbox, deliveries, storage, mcp, push, stickers, sleep, connection })
+      disposeApi = dispose
+      return dispose
     }
-    if (ctx.inject !== undefined) ctx.inject(['webServer'], mountApi)
-    else if (ctx.webServer !== undefined) mountApi(ctx)
-    else ctx.logger.warn('dsh-partner: webServer is unavailable; companion management is disabled')
+    if (resolved.exposeWeb && ctx.inject !== undefined) ctx.inject(['connection', 'webServer'], runtime => {
+      runtime.effect(() => {
+        const dispose = mountApi(runtime)
+        // DSH 的服务注入 effect 持有路由生命周期，启动日志可确认 API 前缀已注册。
+        ctx.logger.info(`dsh-partner: 浏览器管理 API 已注册，前缀 ${resolved.apiPrefix}`)
+        return () => {
+          dispose?.()
+          if (disposeApi === dispose) disposeApi = undefined
+        }
+      }, 'dsh-partner.web-api')
+    })
+    else if (resolved.exposeWeb && ctx.webServer !== undefined && ctx.connection !== undefined) mountApi(ctx)
+    else if (resolved.exposeWeb) ctx.logger.warn('dsh-partner: webServer or connection is unavailable; companion management is disabled')
     await agents.reconcileQqSessions()
     if (resolved.autoStartChannels) await channels.startEnabled()
     await push.start()

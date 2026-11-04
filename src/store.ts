@@ -284,7 +284,9 @@ function parseState(value: unknown): PartnerState {
 function validateState(value: unknown): asserts value is PartnerState {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('partner state must be an object')
   const state = value as Partial<PartnerState>
-  if (state.schemaVersion !== 14) throw new Error('unsupported partner state schema')
+  // P2 插件可能复用已运行新版的单一 DSH Profile；只兼容含已知新增字段的 schema 15，并原样保留批次数据。
+  if (state.schemaVersion !== 14 && state.schemaVersion !== 15) throw new Error('unsupported partner state schema')
+  if (state.schemaVersion === 15 && !Array.isArray(state.mattermostBatches)) throw new Error('partner state schema 15 requires mattermostBatches')
   if (state.requirements !== undefined && !Array.isArray(state.requirements)) throw new Error('partner requirements must be an array')
   if (state.planReceipts !== undefined && (!Array.isArray(state.planReceipts) || state.planReceipts.length > 2000)) throw new Error('partner planReceipts must be a bounded array')
   for (const key of [

@@ -501,6 +501,7 @@ test('capability API saves while a companion is running, without reload or autom
   const item = await fixture(); t.after(item.close)
   let handler
   registerPartnerApi({ register(route) { handler = route.handler; return () => {} } }, '/partner', {
+    connection: { requestRejection: () => undefined },
     store: item.store,
     agents: { isCompanionBusy() { return true }, async reloadCompanion() { throw new Error('must not reload during save') } },
   })

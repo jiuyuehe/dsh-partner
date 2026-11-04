@@ -138,7 +138,7 @@ test('login HTTP route binds channel target and rejects another companion channe
   const channel = await connectWeixin(login, runtime)
   t.mock.method(WeixinApi.prototype, 'getQrCode', async () => ({ qrcode: 'private', qrcode_img_content: 'qr' }))
   let handler
-  registerPartnerApi({ register: route => { handler = route.handler; return () => {} } }, '/api', { ...runtime, login: new WeixinLoginManager() })
+  registerPartnerApi({ register: route => { handler = route.handler; return () => {} } }, '/api', { ...runtime, connection: { requestRejection: () => undefined }, login: new WeixinLoginManager() })
   const request = async companionId => {
     const req = Object.assign(Readable.from([JSON.stringify({ companionId, channelId: channel.id })]), {
       method: 'POST', url: '/api/weixin/login', headers: { 'x-dsh-partner-request': '1', 'content-type': 'application/json' },
@@ -169,7 +169,7 @@ test('new companion login HTTP route tolerates concurrent confirmation and respo
   const { manager, login } = await loginFixture(t)
   t.mock.method(WeixinApi.prototype, 'getQrCodeStatus', async () => ({ status: 'confirmed', ilink_bot_id: 'new-http-bot', bot_token: 'private-token' }))
   let handler
-  registerPartnerApi({ register: route => { handler = route.handler; return () => {} } }, '/api', { ...runtime, login: manager })
+  registerPartnerApi({ register: route => { handler = route.handler; return () => {} } }, '/api', { ...runtime, connection: { requestRejection: () => undefined }, login: manager })
   const request = async () => {
     const req = Object.assign(Readable.from([]), { method: 'GET', url: `/api/weixin/login/${login.id}`, headers: {} })
     const res = { setHeader() {}, end(data) { this.body = JSON.parse(data) } }

@@ -92,7 +92,7 @@ test('stale or simultaneous updates cannot silently overwrite newer changes; can
 test('page identity API shares AI edits and unrelated settings preserve relationship', async t => {
   const f = await fixture(t)
   let handler
-  registerPartnerApi({ register(route) { handler = route.handler; return () => {} } }, '/api', { store: f.store })
+  registerPartnerApi({ register(route) { handler = route.handler; return () => {} } }, '/api', { store: f.store, connection: { requestRejection: () => undefined } })
   const put = async (body, suffix = '/identity', headers = { 'x-dsh-partner-request': '1' }) => {
     const req = Object.assign(Readable.from([Buffer.from(JSON.stringify(body))]), { method: 'PUT', url: `/api/companions/${f.id}${suffix}`, headers })
     const res = { statusCode: 0, setHeader() {}, end(data) { this.body = data ? JSON.parse(data) : undefined } }

@@ -15,7 +15,7 @@ test('notification API validates ownership/approval and identity edits preserve 
     state.pairings.push({id:'p',channelId:'a',userId:'u',status:'approved'},{id:'q',channelId:'foreign',userId:'x',status:'approved'},{id:'blocked',channelId:'a',userId:'b',status:'blocked'})
   })
   let handler
-  registerPartnerApi({register:route=>{handler=route.handler;return()=>{}}},'/api',{store})
+  registerPartnerApi({register:route=>{handler=route.handler;return()=>{}}},'/api',{store,connection:{requestRejection:()=>undefined}})
   const call=async(body,path=`/api/companions/${id}/notifications`,headers={'x-dsh-partner-request':'1'})=>{
     const req=Object.assign(Readable.from([Buffer.from(JSON.stringify(body))]),{method:'PUT',url:path,headers})
     const res={statusCode:0,setHeader(){},end(data){this.body=data?JSON.parse(data):undefined}}

@@ -12,6 +12,7 @@ import { InboxSqliteProvider } from '../lib/inbox/provider.js'
 import { InboxRepository } from '../lib/inbox/repository.js'
 import { CursorRepository } from '../lib/inbox/cursor-repository.js'
 import { mattermostSinceCursor } from '../lib/inbox/mattermost-cursor.js'
+import { mattermostInboxItem } from '../lib/inbox/channel-events.js'
 import { ChannelManager } from '../lib/channels/manager.js'
 import { WeixinApi } from '../lib/channels/weixin/api.js'
 import { DirectTransport } from '../lib/channels/direct/transport.js'
@@ -185,13 +186,22 @@ test('Mattermost overlap keeps a high watermark while same-time posts deduplicat
   assert.equal(inbox.events.listEvents().length, 3)
 })
 
-function makeStore(channel, userId) {
+function makeStore(channel, userId, pairings) {
   const state = {
     channels: [channel], companions: [{ id: channel.companionId }], sessions: [], recentReceipts: [],
-    pairings: [{ id: 'approved', channelId: channel.id, userId, displayName: userId, status: 'approved', createdAt: 1, updatedAt: 1 }],
+    pairings: pairings ?? [{ id: 'approved', channelId: channel.id, userId, displayName: userId, status: 'approved', createdAt: 1, updatedAt: 1 }],
   }
   return { snapshot: () => structuredClone(state), update: async change => { change(state); return structuredClone(state) }, isCompanionRemoving: () => false }
 }
+
+test('Mattermost auto-discovered DM ID becomes the persisted conversation source', () => {
+  const channel = { id: 'mm-config', platform: 'mattermost', accountId: 'mm-bot', direct: { baseUrl: 'http://localhost', targetId: '', peerId: '' } }
+  const item = mattermostInboxItem(channel, { id: 'post-1', sender: 'peer', targetId: 'dm-discovered', text: 'hello', timestamp: 10 }, () => false, 20)
+  assert.equal(item.status, 'filtered')
+  assert.equal(item.envelope.channelId, 'dm-discovered')
+  assert.equal(item.envelope.conversationId, 'dm-discovered')
+  assert.match(item.envelope.conversationKey, /dm-discovered/)
+})
 
 test('WeChat poll resumes stored buffer, deduplicates replay and never starts an Agent in Phase 2', async t => {
   const { path, inbox, register } = await fixture(t)
@@ -229,6 +239,76 @@ test('WeChat poll resumes stored buffer, deduplicates replay and never starts an
   assert.equal(agentRuns, 0)
   assert.equal(restarted.events.listEvents().length, 1)
   assert.deepEqual(JSON.parse(restarted.cursors.get(channel.id).cursorJson), { buffer: 'buffer-2' })
+})
+
+test('WeChat creates a visible pairing request for a filtered contact and logs the received message safely', async t => {
+  const { inbox } = await fixture(t)
+  const channel = { id: 'wx-config', platform: 'weixin', companionId: 'companion', accountId: 'wx-bot', name: 'wx', enabled: true, createdAt: 1, updatedAt: 1 }
+  const store = makeStore(channel, 'wx-peer', [])
+  const manager = new ChannelManager({}, store, {}, { reply: async () => { assert.fail('P2 must not start an Agent') } }, '.', inbox)
+  const controller = new AbortController()
+  const sent = []
+  t.mock.method(WeixinApi.prototype, 'getUpdates', async () => ({ get_updates_buf: 'buffer-1', msgs: [{ message_type: 1, from_user_id: 'wx-peer', message_id: 'wx-post-1', context_token: 'secret-context-route', item_list: [{ type: 1, text_item: { text: '查看项目数据' } }] }] }))
+  t.mock.method(WeixinApi.prototype, 'sendText', async (...args) => { sent.push(args); controller.abort() })
+  const persist = inbox.events.persistPage.bind(inbox.events)
+  inbox.events.persistPage = (...args) => persist(...args)
+  await manager.pollLoop(channel, new WeixinApi('https://example.test', 'not-a-real-token'), controller.signal)
+  const [pairing] = store.snapshot().pairings
+  assert.equal(pairing.status, 'pending')
+  assert.match(pairing.pairingCode, /^[A-F0-9]{8}$/)
+  assert.equal(sent.length, 1)
+  assert.match(sent[0][1], new RegExp(pairing.pairingCode))
+  const [filtered] = inbox.events.listEvents('filtered')
+  assert.equal(filtered.payload.text, '')
+  assert.equal(filtered.payload.replyContextToken, undefined)
+  const received = manager.channelDiagnostics().find(item => item.phase === 'message-received')
+  assert.match(received.textPreview, /查看项目数据/)
+  assert.doesNotMatch(JSON.stringify(manager.channelDiagnostics()), /secret-context-route|not-a-real-token/)
+})
+
+test('Mattermost auto-discovered DM persists a filtered post, opens pairing, and sends the code to that DM', async t => {
+  const { inbox } = await fixture(t)
+  const high = 1_700_000_000_000
+  inbox.cursors.commit(cursorMattermost(high))
+  const channel = { id: 'mm-config', platform: 'mattermost', companionId: 'companion', accountId: 'mm-bot', name: 'mm', enabled: true, createdAt: 1, updatedAt: 1,
+    direct: { baseUrl: 'http://localhost', targetId: '', peerId: '' } }
+  const store = makeStore(channel, 'mm-peer', [])
+  const manager = new ChannelManager({}, store, {}, { reply: async () => { assert.fail('P2 must not start an Agent') } }, '.', inbox)
+  const controller = new AbortController()
+  const sent = []
+  const transport = {
+    poll: async () => ({ cursor: String(high + 100), messages: [{ id: 'mm-post-1', sender: 'mm-peer', targetId: 'verified-dm', text: '检查版本', timestamp: high + 100 }] }),
+    forTarget: (targetId, expected) => ({ sendText: async (userId, text) => { sent.push({ targetId, expected, userId, text }) } }),
+  }
+  const persist = inbox.events.persistPage.bind(inbox.events)
+  inbox.events.persistPage = (...args) => { const result = persist(...args); controller.abort(); return result }
+  await manager.pollMattermostInbox(channel, transport, controller.signal)
+  const [pairing] = store.snapshot().pairings
+  assert.equal(pairing.status, 'pending')
+  assert.equal(pairing.directTargetId, 'verified-dm')
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0].targetId, 'verified-dm')
+  assert.equal(sent[0].userId, 'mm-peer')
+  assert.match(sent[0].text, new RegExp(pairing.pairingCode))
+  const [filtered] = inbox.events.listEvents('filtered')
+  assert.equal(filtered.payload.text, '')
+  assert.equal(filtered.payload.channelId, 'verified-dm')
+  assert.equal(inbox.cursors.get(channel.id).highWatermark, high + 100)
+  assert.ok(manager.channelDiagnostics().some(item => item.phase === 'pairing-notice-sent' && item.conversationId === 'verified-dm'))
+})
+
+test('recent filtered WeChat receipt restores a pending approval after the old P2 inbox gap', async t => {
+  const { inbox } = await fixture(t)
+  const channel = { id: 'wx-config', platform: 'weixin', companionId: 'companion', accountId: 'wx-bot', name: 'wx', enabled: true, createdAt: 1, updatedAt: 1 }
+  const store = makeStore(channel, 'wx-peer', [])
+  const envelope = event('message:legacy-filtered', { channelConfigId: channel.id, actorId: 'wx-peer', text: '', receivedAt: Date.now(), isBotMessage: false })
+  inbox.events.persistPage([{ envelope, status: 'filtered' }], cursorWeixin('buffer-1', Date.now(), channel.id))
+  const manager = new ChannelManager({}, store, {}, {}, '.', inbox)
+  await manager.restoreRecentPairingRequests(channel)
+  assert.equal(store.snapshot().pairings.length, 1)
+  assert.equal(store.snapshot().pairings[0].userId, 'wx-peer')
+  assert.equal(store.snapshot().pairings[0].status, 'pending')
+  assert.ok(manager.channelDiagnostics().some(item => item.phase === 'pairing-recovered'))
 })
 
 test('Mattermost poll bootstraps without history, overlaps after restart, and persists same-time posts without Agent execution', async t => {

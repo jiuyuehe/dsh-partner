@@ -139,7 +139,9 @@ export interface PartnerState {
   concernExecutions?: import('./concern-execution.js').ConcernExecutionReceipt[]
   mcpServers?: import('./mcp/domain.js').McpServer[]
   mcpBindings?: import('./mcp/domain.js').McpBinding[]
-  schemaVersion: 14
+  schemaVersion: 14 | 15
+  /** 后续版本新增的 Mattermost 批次记录；旧版只保留原值，不消费或重写其内容。 */
+  mattermostBatches?: unknown[]
   companions: Companion[]
   channels: WeixinChannel[]
   pairings: PairingRequest[]

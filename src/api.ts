@@ -46,6 +46,9 @@ import type { PushService } from './notifications/push-service.js'
 export interface WebServerLike {
   register(route: { kind: 'prefix'; path: string; handler(req: IncomingMessage, res: ServerResponse): void | Promise<void> }): () => void
 }
+export interface ConnectionAccessLike {
+  requestRejection(request: IncomingMessage): 401 | 403 | 409 | undefined
+}
 const loginCaches=new WeakMap<PartnerStore,DirectLoginCache>()
 function loginCache(store:PartnerStore):DirectLoginCache {
   let cache=loginCaches.get(store)
@@ -55,6 +58,7 @@ function loginCache(store:PartnerStore):DirectLoginCache {
 
 interface ApiRuntime {
   sleep?: import('./character/sleep-service.js').SleepService
+  connection: ConnectionAccessLike
   stickers?: StickerLibrary
   push?: PushService
   concernExecution?: import('./concern-execution.js').ConcernExecutionDispatcher
@@ -86,6 +90,9 @@ export function registerPartnerApi(webServer: WebServerLike, prefix: string, run
     handler: async (req, res) => {
       let release:(()=>void)|undefined
       try {
+        // DSH Web Server 不负责浏览器认证；先由 Connection 校验 Host、Origin 与会话。
+        const rejection = runtime.connection.requestRejection(req)
+        if (rejection !== undefined) { res.statusCode = rejection; res.end(); return }
         assertSameOrigin(req)
         if(req.method==='GET'&&new URL(req.url??'/', 'http://partner.local').pathname===`${prefix}/storage/status`) {
           if(!runtime.storage)throw httpError(503,'存储服务不可用')
@@ -436,7 +443,7 @@ async function dispatch(req: IncomingMessage, res: ServerResponse, prefix: strin
   }
 
   if (segments[0] === 'channels') {
-    if(method==='GET'&&segments[1]==='status'&&segments.length===2)return sendJson(res,200,{channels:await runtime.channels.views(),pairings:runtime.store.snapshot().pairings})
+    if(method==='GET'&&segments[1]==='status'&&segments.length===2)return sendJson(res,200,{channels:await runtime.channels.views(),pairings:runtime.store.snapshot().pairings,channelDiagnostics:runtime.channels.channelDiagnostics()})
     if (method === 'POST' && (segments.length === 1 || (segments.length === 2 && segments[1] === 'test'))) {
       mutation(req)
       const body = await readObject(req)
