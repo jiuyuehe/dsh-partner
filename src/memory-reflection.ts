@@ -126,7 +126,8 @@ export class MemoryReflectionService {
   private async extract(companion: Companion, turn: ConversationTurn, repair = false): Promise<ReflectionResult> {
     const existing = await this.store.candidateMemories(companion.id, turn.scopeId, turn.user)
     const thought = !repair ? this.thoughts?.prepare(turn) : undefined
-    const review = !repair ? this.interactionReview?.prepare(turn) : undefined
+    const reviewContext = !repair && this.interactionReview ? await this.store.history(companion.id, turn.scopeId, turn.at, 12) : []
+    const review = !repair ? this.interactionReview?.prepare(turn, Date.now(), reviewContext) : undefined
     const story = turn.characterEnabled && !repair ? await this.store.characterState(companion.id, turn.scopeId) : undefined
     const diaries = await this.store.recentReflectionsForScope(companion.id, turn.scopeId, 1)
     const concerns = await this.concerns.list(companion.id, turn.concernScopeId ?? turn.scopeId, false, 40)

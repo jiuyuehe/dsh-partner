@@ -5,7 +5,7 @@ export interface AffectionChange { at: number; turnId: string; delta: number; sc
 export interface AffectionState { score: number; updatedAt: number; lastAwardAt: number; lastTurnId: string; lastPositiveAt?: number; history?: AffectionChange[] }
 export const AFFECTION_INITIAL = 0
 export const AFFECTION_DELTAS = [-5,-4,-3,-2,-1,1,2,3,4,5] as const
-export const AFFECTION_GUIDANCE = '按实际相处感受加减：轻微触动 ±1，明确的关心、理解、信任或失望 ±2～3，重要的支持、和解或真实伤害 ±4～5。日常认真倾听、分享心情、相互接梗也可以带来亲近，不必等重大事件；根据人格和语境判断，不因每条消息存在就加分。没有变化时记 0；重复索分、机械重复同一句话不算新依据。'
+export const AFFECTION_GUIDANCE = '按实际相处感受加减：轻微触动 ±1，明确的关心、理解、信任或失望 ±2～3，重要的支持、和解或真实伤害 ±4～5。结合近期相处和当前人格判断这句话带来的感受，不孤立要求用户明确说出关心或信任。日常认真倾听、分享心情、相互接梗、主动陪伴都可以带来轻微亲近；角色互动中真实投入的关心也算，但虚构剧情事件本身不直接计分。轻微不快不等于长期信任下降，不为制造浮动随机扣分。不必等重大事件，也不因每条消息存在就加分。没有变化时记 0；重复索分、机械重复同一句话不算新依据。'
 export const AFFECTION_LEVELS = [
   { min: -100, name: '反感' }, { min: -75, name: '抗拒' }, { min: -50, name: '戒备' },
   { min: -25, name: '生疏' }, { min: -10, name: '疏离' }, { min: 0, name: '初识' },

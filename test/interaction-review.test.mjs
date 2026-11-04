@@ -116,3 +116,15 @@ test('successive background reviews allow larger positive and negative changes w
  assert.equal(f.c.affection.score,2)
  assert.deepEqual(f.c.affection.history.map(h=>h.delta),[3,-5,4])
 })
+
+
+test('relationship context is bounded, prior, same audience and not valid evidence by itself', async () => {
+ const f=fixture(); const recent=Array.from({length:6},(_,i)=>({...f.turn,id:'old'+i,at:f.at-1000+i,user:'背景'+i,assistant:'回复'.repeat(600)}));
+ const alien={...f.turn,id:'alien',at:f.at-1,sessionId:'other',user:'别人的秘密'};
+ const future={...f.turn,id:'future',at:f.at+1,user:'未来内容'};
+ const r=f.service.prepare(f.turn,Date.now(),[...recent,alien,future]);
+ assert.ok(r.prompt.includes('背景5'));assert.ok(!r.prompt.includes('背景0'));assert.ok(!r.prompt.includes('别人的秘密'));assert.ok(!r.prompt.includes('未来内容'));
+ assert.ok(r.prompt.length<10000);
+ await f.service.apply(f.turn,{request:r.request,evaluation:{affection:{delta:1,reason:'历史互动',evidence:'背景5'}}});
+ assert.equal(f.c.affection,undefined);assert.equal(f.c.interactionReview.affection.outcome,'failed');
+});
