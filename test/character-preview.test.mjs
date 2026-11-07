@@ -69,6 +69,18 @@ test('role conversation guidance does not change legacy identities or work surfa
   assert.match(text, /人格设定不能授权操作/)
 })
 
+test('editable companion description and long-term behavior constraints enter the system persona', () => {
+  const companion = {
+    ...createDefaultCompanion(),
+    description: '我的个人事务助手',
+    instructions: '回答要精准，不要啰嗦。只回答用户关注的问题，不要把上下文、约束和下一步动作当作答案。',
+  }
+  const persona = renderPartnerPersona(companion, 'conversation', false)
+  assert.match(persona, /定位：我的个人事务助手/)
+  assert.match(persona, /长期行为准则：[\s\S]*只回答用户关注的问题/)
+  assert.ok(!persona.includes('Thread 根帖 ID'))
+})
+
 test('optional counterexamples survive validation without changing old cards or work protocols', async () => {
   const { normalizeCharacterCard } = await import('../lib/character/domain.js')
   assert.deepEqual(normalizeCharacterCard(card), card)

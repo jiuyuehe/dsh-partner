@@ -33,7 +33,13 @@ export interface ChannelView {
   qq?: import('./channels/qq/settings.js').QqSettings
   qqActivity?: import('./channels/qq/actions.js').QqActionReceipt[]
   platform?: 'weixin' | 'matrix' | 'mattermost' | 'qq'
-  direct?: { baseUrl: string; targetId: string; peerId: string }
+  direct?: {
+    baseUrl: string; targetId: string; peerId: string
+    allowedChannelIds?: string[]
+    mattermostChannels?: Array<{id:string;name:string;displayName:string;type:'O'|'P'}>
+    botUsername?: string
+    threadHistoryRounds?: number
+  }
   id: string; companionId: string; accountId: string; name: string; enabled: boolean
   createdAt: number; updatedAt: number; runtimeStatus: 'stopped' | 'starting' | 'running' | 'error'
   activity?: {kind:string;label:string;sessionId?:string}[]
@@ -42,6 +48,8 @@ export interface ChannelView {
   lastError?: string; credentialConfigured: boolean
 }
 export interface PairingView {
+  allowedChannelIds?: string[]
+  pendingChannelIds?: string[]
   directTargetId?: string
   pairingCode?: string
   contactKey?: string

@@ -22,13 +22,15 @@ import pickerCssText from './ui/companion-picker.css'
 import pendantCssText from './pendant/widget.css'
 import pendantSettingsCssText from './pendant/settings-panel.css'
 import memoryCssText from './ui/memory/memory-ui.css'
+
+// 由构建脚本从 package.json 注入，页面可直接标识当前加载的伙伴版本。
+declare const __DSH_PARTNER_VERSION__: string
 import {MemoryPanel} from './ui/memory/memory-panel.js'
 import {ConcernPanel} from './ui/memory/concern-panel.js'
 import { PendantSettingsPanel } from './pendant/settings-panel.js'
 import { PartnerPendant } from './pendant/widget.js'
 import { CompanionPicker } from './ui/companion-picker.js'
 import { api, loadPartner, cachedPartner, type ChannelView, type CompanionView, type LoginView, type PartnerSnapshot } from './client-api.js'
-import { useWorkspaceTopAnchor } from './sidebar-anchor.js'
 import { pendingStorageRecovery } from './ui/storage-recovery-marker.js'
 import { observeChannelDiagnostics } from './ui/use-channel-status.js'
 
@@ -86,8 +88,7 @@ export function apply(ctx: ClientContext): void {
 }
 
 function PartnerSidebar(props: SidebarProps & { controller: Controller; collapse(): void }): JSX.Element {
-  const ref = useRef<HTMLElement>(null)
-  useWorkspaceTopAnchor(ref)
+  // 侧栏节点由 DSH 插槽与 React 生命周期共同管理，不在宿主 DOM 中手动搬动它。
   const [open, setOpen] = useState(true)
   const [snapshot, setSnapshot] = useState<PartnerSnapshot | undefined>(cachedPartner)
   useChannelStatus(setSnapshot)
@@ -98,10 +99,10 @@ function PartnerSidebar(props: SidebarProps & { controller: Controller; collapse
     props.controller.open(id)
     if (props.wide && window.matchMedia('(max-width: 820px)').matches) props.collapse()
   }
-  if (!props.wide) return <section ref={ref} className="dsh-partner-sidebar is-rail"><button type="button" className={`dsh-partner-rail${props.controller.isOpen() ? ' is-active' : ''}`} title="伙伴" onClick={() => props.controller.toggle()}><IconAgentPresetOutline16 size={18} /></button></section>
-  return <section ref={ref} className="dsh-partner-sidebar">
+  if (!props.wide) return <section className="dsh-partner-sidebar is-rail"><button type="button" className={`dsh-partner-rail${props.controller.isOpen() ? ' is-active' : ''}`} title={`伙伴 · v${__DSH_PARTNER_VERSION__}`} onClick={() => props.controller.toggle()}><IconAgentPresetOutline16 size={18} /></button></section>
+  return <section className="dsh-partner-sidebar">
     <div className="dsh-partner-sidebar-heading">
-      <button type="button" className="dsh-partner-sidebar-title" aria-expanded={open} onClick={() => setOpen(value => !value)}><span data-open={open}><IconChevronDownOutline14 size={14} /></span>伙伴</button>
+      <button type="button" className="dsh-partner-sidebar-title" aria-expanded={open} onClick={() => setOpen(value => !value)}><span data-open={open}><IconChevronDownOutline14 size={14} /></span>伙伴<small className="dsh-partner-sidebar-version">v{__DSH_PARTNER_VERSION__}</small></button>
     </div>
     <div className={`dsh-partner-sidebar-list${open ? ' is-open' : ''}`} aria-hidden={!open}>
       <div className="dsh-partner-sidebar-list-inner">
@@ -173,7 +174,7 @@ function PartnerWorkspace({ controller }: ConversationProps & { controller: Cont
   return <main className="dsh-partner-workspace">
     {creatingCompanion && <CompanionCreateDialog close={() => setCreatingCompanion(false)} create={create} />}
     <header className="dsh-partner-topbar">
-      <div className="dsh-partner-topbar-brand"><button type="button" data-xiaohei-workspace-close onClick={controller.close} aria-label="返回会话" title="返回会话"><IconChevronLeftOutline14 size={15} /></button><IconAgentPresetOutline16 size={18} /><span><strong>伙伴</strong><small>长期身份与消息渠道</small></span></div>
+      <div className="dsh-partner-topbar-brand"><button type="button" data-xiaohei-workspace-close onClick={controller.close} aria-label="返回会话" title="返回会话"><IconChevronLeftOutline14 size={15} /></button><IconAgentPresetOutline16 size={18} /><span><strong>伙伴</strong><small>长期身份与消息渠道 · v{__DSH_PARTNER_VERSION__}</small></span></div>
       <MobileWorkspaceControls
         companions={snapshot?.companions ?? []}
         selectedId={selectedId}

@@ -46,9 +46,17 @@ import { channelReplyPartsAfter, isAutonomousDeliveryTurn, isInternalTaskNotice 
 import { continuationFinalReply } from '../scheduler/final-reply.js'
 import { savedContinuationRoute } from '../scheduler/channel-origin.js'
 import { prepareChannelReply } from './outbound-media.js'
+import { hasDeliverableChannelReply } from './reply-deliverability.js'
 import { questionOrigin } from './question-origin.js'
 import type { DurableInbox } from '../inbox/durable-inbox.js'
 import { weixinInboxItem, mattermostInboxItem } from '../inbox/channel-events.js'
+import { DEFAULT_INBOX_BATCH_POLICY, MATTERMOST_INBOX_BATCH_POLICY, hasSubstantiveMattermostText, renderCoalescedUserText, renderMattermostSteerUserText } from '../inbox/coalescer.js'
+import { effectiveMattermostHistoryRounds, validateMattermostHistoryRounds } from './direct/mattermost-settings.js'
+import { InboxDispatcher, PermanentInboxError, type InboxDispatcherObserver } from '../inbox/dispatcher.js'
+import type { ClaimedInboxBatch } from '../inbox/repository.js'
+import type { InboxEventId } from '../inbox/ids.js'
+import type { InboundEnvelope, WeixinMediaSource } from '../inbox/domain.js'
+import type { InboxSessionIdentity } from '../inbox/session-router.js'
 import { legacyMattermostHighWatermark, mattermostHighWatermark, mattermostSinceCursor } from '../inbox/mattermost-cursor.js'
 import type { AttachmentDeliveryService } from '../attachments/service.js'
 import { requirementAttachments } from '../requirements/attachments.js'
@@ -90,6 +98,7 @@ export class ChannelManager {
   private readonly directReplyProgress = new Map<string, ReplyProgressController>()
   private readonly pendingQuestions = new Map<string, PendingQuestion>()
   private readonly outboundQueues = new Map<string, Promise<void>>()
+  private readonly inboxDispatcher?: InboxDispatcher
   private readonly notificationDelivery: NotificationDelivery
   private requirementDelivery?: { service: AttachmentDeliveryService; prefix: string }
 
@@ -102,7 +111,18 @@ export class ChannelManager {
     private readonly agents: PartnerAgentRuntime,
     private readonly defaultCwd: string,
     private readonly durableInbox?: DurableInbox,
-  ) { this.notificationDelivery = new NotificationDelivery(store);this.groupAutonomy=new QqGroupAutonomy(ctx) }
+  ) {
+    this.notificationDelivery = new NotificationDelivery(store)
+    this.groupAutonomy = new QqGroupAutonomy(ctx)
+    if (durableInbox) {
+      const processor = {
+        process: (batch: ClaimedInboxBatch, signal: AbortSignal) => this.processInboxBatch(batch, signal),
+        canSteer: (active: ClaimedInboxBatch, incoming: ClaimedInboxBatch) => this.canSteerInboxBatch(active, incoming),
+        steer: (active: ClaimedInboxBatch, incoming: ClaimedInboxBatch, signal: AbortSignal) => this.steerInboxBatch(active, incoming, signal),
+      }
+      this.inboxDispatcher = new InboxDispatcher(durableInbox.events, processor, event => this.diagnoseInboxDispatch(event))
+    }
+  }
 
   attachQuestionAnswerer(agentCtx: Context, route: ChannelSession): () => void {
     return agentCtx.on('user-questions/request', (request, next) => this.askThroughChannel(route, request, next), { prepend: true })
@@ -211,8 +231,11 @@ export class ChannelManager {
   async views(): Promise<ChannelView[]> {
     return Promise.all(this.store.snapshot().channels.map(async channel => {
       const runtime = this.runtime.get(channel.id) ?? { status: 'stopped' as const }
+      const visibleChannel = channel.platform === 'mattermost' && channel.direct
+        ? { ...channel, direct: { ...channel.direct, threadHistoryRounds: effectiveMattermostHistoryRounds(channel.direct.threadHistoryRounds) } }
+        : channel
       return {
-        ...channel,
+        ...visibleChannel,
         runtimeStatus: runtime.status,
         ...(channel.platform==='qq'?{qqLatency:this.qqLatency.view(channel.id)}:{}),
         ...(runtime.lastError ? { lastError: runtime.lastError } : {}),
@@ -246,10 +269,12 @@ export class ChannelManager {
       try { await this.start(channel.id) }
       catch { this.runtime.set(channel.id,{status:'error',lastError:'渠道启动失败，请检查凭据和配置'}) }
     }
+    this.inboxDispatcher?.start()
   }
 
   async start(channelId: string): Promise<void> {
     this.startChatRecovery()
+    this.inboxDispatcher?.start()
     if (this.tasks.has(channelId)) return
     const channel = requiredChannel(this.store, channelId)
     // 兼容旧版 P2 只写入 filtered 事件、未创建待审批联系人的缺口。
@@ -287,12 +312,13 @@ export class ChannelManager {
     // 只恢复最近一小时的脱敏过滤记录，不把旧的历史联系人重新开放。
     for (const event of this.durableInbox.events.listEvents('filtered', 1000)) {
       if (event.channelConfigId !== channel.id || event.receivedAt < cutoff || event.payload.isBotMessage) continue
-      const targetId = event.platform === 'mattermost' ? event.payload.channelId ?? event.payload.conversationId : undefined
+      const targetId = event.platform === 'mattermost' && !event.payload.isChannelConversation ? event.payload.channelId ?? event.payload.conversationId : undefined
       const { request, created } = await this.ensurePendingPairing(
         channel,
         event.payload.actorId,
         event.payload.actorName ?? (event.platform === 'weixin' ? shortIdentity(event.payload.actorId) : event.payload.actorId),
         targetId,
+        event.platform === 'mattermost' && event.payload.isChannelConversation ? event.payload.channelId : undefined,
       )
       if (created && request) this.diagnose({
         level: 'warn', platform: event.platform, channelId: channel.id, phase: 'pairing-recovered',
@@ -307,6 +333,7 @@ export class ChannelManager {
     userId: string,
     displayName: string,
     directTargetId?: string,
+    pendingChannelId?: string,
   ): Promise<{ request?: PairingRequest; created: boolean }> {
     let request: PairingRequest | undefined
     let created = false
@@ -314,6 +341,12 @@ export class ChannelManager {
       if (!state.channels.some(item => item.id === channel.id && item.enabled)) return
       const existing = state.pairings.find(item => item.channelId === channel.id && item.userId === userId)
       if (existing) {
+        if (pendingChannelId && !existing.allowedChannelIds?.includes(pendingChannelId)
+          && !existing.pendingChannelIds?.includes(pendingChannelId)) {
+          existing.pendingChannelIds = [...(existing.pendingChannelIds ?? []), pendingChannelId]
+          existing.updatedAt = Date.now()
+          created = true
+        }
         // 仅为旧版空目标的 pending 请求补上经过收件验证的 DM ID。
         if (existing.status === 'pending' && !existing.directTargetId && directTargetId) {
           existing.directTargetId = directTargetId
@@ -330,6 +363,7 @@ export class ChannelManager {
         userId,
         displayName: displayName.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 120) || userId,
         ...(directTargetId ? { directTargetId } : {}),
+        ...(pendingChannelId ? { pendingChannelIds: [pendingChannelId] } : {}),
         pairingCode: randomBytes(4).toString('hex').toUpperCase(),
         status: 'pending', createdAt: now, updatedAt: now,
       }
@@ -363,6 +397,7 @@ export class ChannelManager {
     }
     this.pendingQuestions.clear()
     await Promise.all([...this.tasks.keys()].map(id => this.stop(id)))
+    await this.inboxDispatcher?.close()
     await Promise.allSettled([...this.messageSendQueues.values()])
   }
 
@@ -377,7 +412,10 @@ export class ChannelManager {
   }
 
   async setEnabled(channelId: string, enabled: boolean): Promise<void> {
-    requiredChannel(this.store, channelId)
+    const current = requiredChannel(this.store, channelId)
+    const status = this.runtime.get(channelId)?.status ?? 'stopped'
+    // 对已启用但已停止或报错的渠道，明确执行重连前先清理可能残留的收件任务。
+    if (enabled && current.enabled && (status === 'stopped' || status === 'error')) await this.stop(channelId)
     await this.store.update(state => {
       const channel = state.channels.find(item => item.id === channelId)
       if (enabled && channel && (!channel.platform || channel.platform === 'weixin') && state.channels.some(c => c.id !== channelId && c.companionId === channel.companionId && (!c.platform || c.platform === 'weixin') && c.enabled)) throw new Error('此伙伴已有其他微信渠道启用，请先停用其他渠道')
@@ -385,6 +423,55 @@ export class ChannelManager {
     })
     if (enabled) await this.start(channelId)
     else await this.stop(channelId)
+  }
+
+  /** 校验机器人已加入的频道；旧配置缺少目录时，允许复用白名单保存接口恢复目录。 */
+  async updateMattermostAllowedChannels(channelId: string, allowedChannelIds: readonly string[]): Promise<void> {
+    const channel = requiredChannel(this.store, channelId)
+    if (channel.platform !== 'mattermost' || !channel.direct) throw new Error('只有 Mattermost 渠道支持频道白名单')
+    const ids = [...new Set(allowedChannelIds)]
+    if (ids.length > 50 || ids.some(id => !/^[a-z0-9]{26}$/.test(id))) throw new Error('Mattermost 允许频道列表无效')
+    const selectionChanged = JSON.stringify(ids) !== JSON.stringify(channel.direct.allowedChannelIds ?? [])
+    const catalogMissing = !Array.isArray(channel.direct.mattermostChannels) || channel.direct.mattermostChannels.length === 0
+    if (!selectionChanged && !catalogMissing) return
+    const credential = await this.credentials.read(channel.id)
+    const probe = new DirectTransport({ platform: 'mattermost', baseUrl: credential.baseUrl, targetId: channel.direct.targetId },
+      credential.botToken, { accountId: channel.accountId, peerId: channel.direct.peerId })
+    let catalog: Awaited<ReturnType<DirectTransport['mattermostChannels']>>
+    let botUsername: string | undefined
+    try {
+      botUsername = (await probe.validate()).username
+      catalog = await probe.mattermostChannels()
+    } finally { probe.close() }
+    if (selectionChanged && ids.some(id => !catalog.some(entry => entry.id === id))) throw new Error('选择的 Mattermost 频道不属于当前机器人已加入的频道')
+    const latest = requiredChannel(this.store, channel.id)
+    if (latest.updatedAt !== channel.updatedAt || latest.accountId !== channel.accountId || latest.direct?.baseUrl !== channel.direct.baseUrl) throw new Error('Mattermost 配置在校验期间发生变化，请重试')
+    const wasEnabled = latest.enabled
+    // 只补回旧配置缺失的目录时不打断正在运行的 DM 收件；真正变更白名单才重启通道。
+    if (wasEnabled && selectionChanged) await this.stop(channel.id)
+    await this.store.update(state => {
+      const current = state.channels.find(item => item.id === channel.id)
+      if (!current?.direct || current.accountId !== channel.accountId || current.updatedAt !== channel.updatedAt) throw new Error('Mattermost 配置在保存期间发生变化')
+      current.direct.allowedChannelIds = ids
+      current.direct.mattermostChannels = catalog
+      if (botUsername) current.direct.botUsername = botUsername
+      current.updatedAt = Date.now()
+    })
+    if (wasEnabled && selectionChanged) await this.start(channel.id)
+  }
+
+  /** 保存 Mattermost Thread 历史轮数；下次读历史时立即生效，不中断正在运行的渠道。 */
+  async updateMattermostHistoryRounds(channelId: string, historyRounds: number): Promise<void> {
+    const channel = requiredChannel(this.store, channelId)
+    if (channel.platform !== 'mattermost' || !channel.direct) throw new Error('只有 Mattermost 渠道支持 Thread 历史设置')
+    const value = validateMattermostHistoryRounds(historyRounds)
+    if (effectiveMattermostHistoryRounds(channel.direct.threadHistoryRounds) === value) return
+    await this.store.update(state => {
+      const current = state.channels.find(item => item.id === channelId)
+      if (!current?.direct || current.platform !== 'mattermost' || current.accountId !== channel.accountId) throw new Error('Mattermost 渠道配置已变化')
+      current.direct.threadHistoryRounds = value
+      current.updatedAt = Date.now()
+    })
   }
 
   async sendProactive(channelId: string, userId: string, text: string, receipt?: string): Promise<void> {
@@ -399,7 +486,7 @@ export class ChannelManager {
     if(!channel.enabled)throw new Error('渠道已停用')
     if(!channelReplyAllowed(this.store.snapshot(),route.channelId,route.userId))throw new Error('渠道联系人尚未批准')
     const credential=await this.credentials.read(route.channelId)
-    await this.sender(channel, credential, route.userId).sendAttachment(route.userId,file,this.contextTokens.get(`${route.channelId}:${route.userId}`),signal)
+    await this.sender(channel, credential, route.userId).sendAttachment(route.userId,file,this.contextTokens.get(contextTokenKey(channel.accountId, route.userId)),signal)
   }
 
   async notifyContinuation(entry: import('../scheduler/domain.js').ScheduledPartnerTask): Promise<void> {
@@ -591,11 +678,25 @@ export class ChannelManager {
     const channel = requiredChannel(this.store, channelId)
     if (!channel.enabled) throw new Error('通知渠道已停用')
     const pairing = this.store.snapshot().pairings.find(item => item.channelId === channelId && item.userId === userId)
-    if (!channelReplyAllowed(this.store.snapshot(),channelId,userId)) throw new Error('通知接收人尚未批准')
+    const allowed = (state = this.store.snapshot()) => {
+      const source = reply.directSource
+      if (source?.conversationType === 'thread') return channelReplyAllowed(state, channelId, source.actorId ?? userId,
+        source.targetId, 'thread', source.isChannelConversation === true)
+      return channelReplyAllowed(state,channelId,userId,source?.targetId,'dm',false)
+    }
+    if (!allowed()) throw new Error('通知接收人尚未批准')
     const credential = await this.credentials.read(channelId)
-    const token = this.contextTokens.get(`${channelId}:${userId}`)
+    const token = this.contextTokens.get(contextTokenKey(channel.accountId, userId))
     if(reply.idleContactOrigin&&channel.platform==='qq'&&this.runtime.get(channelId)?.status!=='running')throw new NotificationDeferredError()
-    const api = this.sender(channel, credential, userId)
+    let api: ChannelSender
+    if (reply.directSource?.conversationType === 'thread') {
+      if (channel.platform !== 'mattermost' || !channel.direct || !reply.directSource.threadRootId) throw new Error('Mattermost 原线程路由信息不完整')
+      const root = new DirectTransport({ platform: 'mattermost', baseUrl: credential.baseUrl, targetId: channel.direct.targetId,
+        ...(channel.direct.allowedChannelIds ? { allowedChannelIds: channel.direct.allowedChannelIds } : {}) }, credential.botToken,
+        { accountId: channel.accountId, peerId: channel.direct.peerId }, () => this.checkChatSource(channelId, userId, reply))
+      api = root.forThread(reply.directSource.targetId, reply.directSource.threadRootId, channel.accountId,
+        () => this.checkChatSource(channelId, userId, reply), reply.directSource.isChannelConversation ? 'channel' : 'dm')
+    } else api = this.sender(channel, credential, userId)
     // Read-only preflight happens before any part starts. Only this known-unsent
     // failure may be replayed; a lost send acknowledgement is never retry-safe.
     if(reply.idleContactOrigin&&channel.platform==='qq'&&api instanceof DirectTransport){
@@ -614,7 +715,7 @@ export class ChannelManager {
       }
       const current = requiredChannel(this.store, channelId)
       if (!current.enabled || current.companionId !== channel.companionId) throw new Error('通知渠道已停用或授权已变更')
-      if (!channelReplyAllowed(this.store.snapshot(),channelId,userId)) throw new Error('通知接收人尚未批准')
+      if (!allowed()) throw new Error('通知接收人尚未批准')
       return sendNotificationPart(attachment, perform, this.notificationShutdown.signal)
     }
     for (const [index, part] of replyDeliveryParts(reply).entries()) await sendPart(index, () => part.type === 'text'
@@ -625,7 +726,7 @@ export class ChannelManager {
           const guard=()=>{
             this.checkChatSource(channelId,userId,reply)
             const state=this.store.snapshot()
-            if(!state.channels.some(c=>c.id===channel.id&&c.enabled&&c.updatedAt===channel.updatedAt)||!channelReplyAllowed(state,channel.id,userId))throw Error('渠道设置或接收人授权已变化')
+            if(!state.channels.some(c=>c.id===channel.id&&c.enabled&&c.updatedAt===channel.updatedAt)||!allowed(state))throw Error('渠道设置或接收人授权已变化')
           }
           if(emoji.provider==='qq-custom')await api.onebot.sendCustomFace(userId,emoji.id,signal,guard)
           else await api.onebot.sendFace(userId,emoji.id,signal,guard)
@@ -636,15 +737,36 @@ export class ChannelManager {
   private checkChatSource(channelId:string,userId:string,reply:PartnerReply):void {
     if(!reply.directSource)return
     const state=this.store.snapshot(),source=reply.directSource
-    const route=state.sessions.find(s=>s.id===source.routeId&&s.sessionId===source.sessionId&&s.channelId===channelId&&s.userId===userId)
-    const channel=state.channels.find(c=>c.id===channelId),pair=state.pairings.find(p=>p.channelId===channelId&&p.userId===userId)
-    if(!route||!channel||route.companionId!==channel.companionId||this.store.isCompanionRemoving(route.companionId)||channel.accountId!==source.accountId||(channel.direct?.baseUrl??'')!==source.baseUrl||directReplyTarget(state,channelId,userId)!==source.targetId)throw new Error('原始会话、账号或房间已变更，保留回复等待处理，不转发其他渠道')
+    const actorId = source.actorId ?? userId
+    const route=state.sessions.find(s=>s.id===source.routeId&&s.sessionId===source.sessionId&&s.channelId===channelId
+      && (source.conversationType === 'thread'
+        ? s.inboxConversationType === 'thread' && s.inboxThreadRootId === source.threadRootId && s.inboxIsChannelConversation === (source.isChannelConversation === true)
+        : s.userId === userId))
+    const channel=state.channels.find(c=>c.id===channelId)
+    const accessAllowed = source.conversationType === 'thread'
+      ? channelReplyAllowed(state,channelId,actorId,source.targetId,'thread',source.isChannelConversation===true)
+      : channelReplyAllowed(state,channelId,userId,source.targetId,'dm',false)
+    const targetMatches = source.conversationType === 'thread' || directReplyTarget(state,channelId,userId) === source.targetId
+    if(!route||!channel||route.companionId!==channel.companionId||this.store.isCompanionRemoving(route.companionId)||channel.accountId!==source.accountId
+      ||(channel.direct?.baseUrl??'')!==source.baseUrl||!targetMatches)throw new Error('原始会话、账号、频道授权或线程已变更，保留回复等待处理，不转发其他渠道')
+    // 授权撤销单独报告，便于操作人区分权限问题和来源路由变更。
+    if(!accessAllowed)throw new Error(source.isChannelConversation
+      ? 'Mattermost 频道发言人尚未批准或频道授权已撤销，保留回复等待处理'
+      : '渠道联系人尚未批准或授权已撤销，保留回复等待处理')
   }
-  private async sendChatReply(channel:WeixinChannel,userId:string,receipt:string,reply:PartnerReply,first?:(text:string)=>Promise<void>,targetId?:string):Promise<void> {
-    const state=this.store.snapshot(),route=state.sessions.find(s=>s.channelId===channel.id&&s.userId===userId&&s.companionId===channel.companionId)
-    if(!route)throw new Error('聊天来源会话已移除')
+  private async sendChatReply(channel:WeixinChannel,userId:string,receipt:string,reply:PartnerReply,first?:(text:string)=>Promise<void>,targetId?:string,threadRootId?:string,isChannelConversation=false):Promise<void> {
+    const state=this.store.snapshot()
+    const route=typeof reply.chatOriginRouteId==='string'
+      ? state.sessions.find(s=>s.id===reply.chatOriginRouteId&&s.channelId===channel.id&&s.companionId===channel.companionId)
+      : state.sessions.find(s=>s.channelId===channel.id&&s.companionId===channel.companionId
+        && (s.userId===userId || s.lastActorId===userId) && (!threadRootId || s.inboxThreadRootId===threadRootId))
+    // 有明确来源令牌但找不到对应路由时，不按当前会话猜测投递目标。
+    if(!route)throw new Error(reply.chatOriginRouteId!==undefined
+      ? '回复属于其他输入来源或原始会话已移除，不向当前渠道转发'
+      : '聊天来源会话已移除')
     if(reply.chatOriginRouteId!==undefined&&reply.chatOriginRouteId!==route.id)throw new Error('回复属于其他输入来源，仅保留在网页历史，不向当前渠道转发')
-    const payload:PartnerReply={...reply,directSource:{routeId:route.id,sessionId:route.sessionId,accountId:channel.accountId,baseUrl:channel.direct?.baseUrl??'',targetId:targetId??(directReplyTarget(state,channel.id,userId))}}
+    const payload:PartnerReply={...reply,directSource:{routeId:route.id,sessionId:route.sessionId,accountId:channel.accountId,baseUrl:channel.direct?.baseUrl??'',targetId:targetId??(directReplyTarget(state,channel.id,userId)),
+      conversationType:threadRootId?'thread':'dm',actorId:userId,...(threadRootId?{threadRootId,isChannelConversation}:{})}}
     await this.notificationDelivery.deliver(`chat:${receipt}`,channel.companionId,()=>[{channelId:channel.id,userId}],payload,async(target,frozen,part)=>{
       this.checkChatSource(target.channelId,target.userId,frozen)
       await this.sendNotificationTarget(target.channelId,target.userId,frozen,(index,perform)=>part(index,()=>{
@@ -731,8 +853,12 @@ export class ChannelManager {
             const result = this.durableInbox!.events.persistPage(items, {
               channelConfigId: channel.id, platform: 'weixin', cursorType: 'opaque-buffer',
               cursorJson: JSON.stringify({ buffer: nextBuffer }), updatedAt: receivedAt,
-            })
-            this.diagnose({ level: 'log', platform: 'weixin', channelId: channel.id, phase: 'inbox-persisted', detail: '微信收件页已与 get_updates_buf 一起提交。', metadata: { inserted: result.inserted, duplicate: result.duplicate } })
+            }, DEFAULT_INBOX_BATCH_POLICY)
+            this.diagnose({ level: 'log', platform: 'weixin', channelId: channel.id, phase: 'inbox-persisted', detail: '微信收件页已与 get_updates_buf 一起提交。', metadata: { inserted: result.inserted, duplicate: result.duplicate, coalesced: result.coalesced } })
+            if (result.newEventIds.length) {
+              await this.sendInboxAcknowledgements(result.newEventIds, api, signal)
+              this.inboxDispatcher?.notify()
+            }
           } catch (error) {
             this.diagnose({ level: 'error', platform: 'weixin', channelId: channel.id, phase: 'inbox-error', detail: error instanceof Error ? error.message : String(error), metadata: { messageCount: messages.length } })
             throw error
@@ -753,6 +879,382 @@ export class ChannelManager {
         for (const message of messages) { this.diagnoseWeixinMessage(channel, message); this.scheduleInbound(channel, api, message, signal) }
       },
     })
+  }
+
+  private diagnoseInboxDispatch(event: Parameters<InboxDispatcherObserver>[0]): void {
+    const envelope = event.batch.events[0]?.payload
+    if (!envelope) return
+    const level = event.kind === 'failed' ? 'error' : event.kind === 'queue-pressure' ? 'warn' : 'log'
+    const descriptions: Record<string, string> = {
+      claimed: '持久化消息进入 DSH Agent 处理。',
+      completed: 'DSH Agent 已完成并交付本批消息。',
+      filtered: '授权或渠道配置已变化，本批消息未交给 Agent。',
+      failed: event.detail ?? '持久化消息处理失败。',
+      steered: '新消息已排入当前 DSH Agent 的下一步；当前模型或工具步骤结束后会继续处理。',
+      'queue-pressure': '待处理消息超过内存队列预算；消息仍保留在 SQLite 并按 FIFO 排空。',
+    }
+    this.diagnose({
+      level, platform: envelope.platform, channelId: envelope.channelConfigId,
+      phase: `inbox-${event.kind}`, detail: event.detail ?? descriptions[event.kind] ?? `Inbox 状态：${event.kind}`,
+      messageId: envelope.externalMessageId,
+      conversationId: envelope.channelId ?? envelope.conversationId,
+      senderId: envelope.actorId,
+      metadata: {
+        batchId: event.batch.batch.id, eventCount: event.batch.events.length,
+        ...(event.pendingGlobal === undefined ? {} : { pendingGlobal: event.pendingGlobal }),
+        ...(event.pendingConversation === undefined ? {} : { pendingConversation: event.pendingConversation }),
+      },
+    })
+  }
+
+  /** 将 Agent 提交点写入本地渠道诊断，帮助区分“已收到”和“已进入 DSH”。 */
+  private agentLifecycle(
+    platform: ChannelDiagnostic['platform'], channelId: string, messageId: string,
+    conversationId: string, senderId: string, metadata: Record<string, string | number | boolean> = {},
+  ): NonNullable<ReplyProgress['lifecycle']> {
+    const details = {
+      'agent-followup-starting': 'DSH Agent 即将接收本轮用户消息。',
+      'agent-followup-submitted': 'DSH Agent 已接收本轮用户消息并启动 followup。',
+      'agent-followup-completed': 'DSH Agent 本轮执行已结束，正在准备渠道回复。',
+    } as const
+    return (stage, durationMs) => this.diagnose({
+      level: 'log', platform, channelId, phase: stage, detail: details[stage],
+      messageId, conversationId, senderId,
+      metadata: { ...metadata, ...(durationMs === undefined ? {} : { durationMs }) },
+    })
+  }
+
+  /** 先提交原文与游标，再对每条获准新消息单独回执；不获准消息不发送处理确认。 */
+  private async sendInboxAcknowledgements(eventIds: readonly InboxEventId[], transport: WeixinApi | DirectTransport, signal: AbortSignal): Promise<void> {
+    const inbox = this.durableInbox
+    if (!inbox) return
+    await Promise.all(eventIds.map(async eventId => {
+      const event = inbox.events.getEventById(eventId)
+      if (!event || event.status !== 'ready') return
+      const envelope = event.payload
+      const state = this.store.snapshot()
+      const channel = state.channels.find(item => item.id === envelope.channelConfigId)
+      if (!channel || !channel.enabled || channel.accountId !== envelope.accountId
+        || (channel.platform ?? 'weixin') !== envelope.platform
+        || !channelReplyAllowed(state, channel.id, envelope.actorId, envelope.platform === 'mattermost' ? envelope.channelId : undefined,
+          envelope.conversationType, envelope.isChannelConversation === true)) {
+        // 授权在收件和发送间撤销时，落失败态并禁止之后误发确认。
+        if (inbox.events.claimAcknowledgement(eventId)) inbox.events.finishAcknowledgement(eventId, 'failed', '渠道或联系人未获授权')
+        return
+      }
+      if (!inbox.events.claimAcknowledgement(eventId)) return
+      try {
+        signal.throwIfAborted()
+        if (envelope.platform === 'weixin') {
+          await (transport as WeixinApi).sendText(envelope.actorId, '收到，正在整理这组消息。', envelope.replyContextToken, signal)
+        } else {
+          const targetId = envelope.channelId ?? envelope.conversationId
+          const authorize = () => {
+            const latest = this.store.snapshot()
+            if (!channelReplyAllowed(latest, channel.id, envelope.actorId, targetId, envelope.conversationType, envelope.isChannelConversation === true)) throw new Error('Mattermost 联系人或渠道授权已变化')
+          }
+          const target = envelope.conversationType === 'thread'
+            ? (transport as DirectTransport).forThread(targetId, envelope.threadRootId!, envelope.accountId, authorize, envelope.isChannelConversation ? 'channel' : 'dm')
+            : (transport as DirectTransport).forTarget(targetId, { accountId: envelope.accountId, peerId: envelope.actorId }, authorize)
+          try { await target.sendText(envelope.actorId, '收到，正在整理这组消息。', undefined, signal) }
+          finally { target.close() }
+        }
+        inbox.events.finishAcknowledgement(eventId, 'sent')
+        this.diagnose({ level: 'log', platform: envelope.platform, channelId: channel.id, phase: 'inbox-ack-sent', detail: '已立即确认一条获准的渠道消息。', messageId: envelope.externalMessageId, conversationId: envelope.channelId ?? envelope.conversationId, senderId: envelope.actorId })
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error)
+        inbox.events.finishAcknowledgement(eventId, 'unknown', detail)
+        this.diagnose({ level: 'error', platform: envelope.platform, channelId: channel.id, phase: 'inbox-ack-unknown', detail: `确认发送结果未确认：${detail}`, messageId: envelope.externalMessageId, conversationId: envelope.channelId ?? envelope.conversationId, senderId: envelope.actorId })
+      }
+    }))
+  }
+
+  private async processInboxBatch(batch: ClaimedInboxBatch, signal: AbortSignal): Promise<'completed' | 'filtered'> {
+    const first = batch.events[0]?.payload
+    if (!first || batch.events.length === 0) return 'completed'
+    const snapshot = this.store.snapshot()
+    const channel = snapshot.channels.find(item => item.id === first.channelConfigId)
+    if (!channel || !channel.enabled || channel.accountId !== first.accountId || (channel.platform ?? 'weixin') !== first.platform) return 'filtered'
+    const conversationKey = first.conversationKey
+    const targetId = first.platform === 'mattermost' ? (first.channelId ?? first.conversationId) : undefined
+    if (batch.events.some(event => event.payload.conversationKey !== conversationKey || event.payload.accountId !== first.accountId)) {
+      throw new PermanentInboxError('持久化批次包含不同会话或机器人账号，已阻止执行')
+    }
+    const allowed = (): boolean => {
+      const current = this.store.snapshot()
+      const currentChannel = current.channels.find(item => item.id === channel.id)
+      return !!currentChannel?.enabled
+        && currentChannel.accountId === first.accountId
+        && currentChannel.companionId === channel.companionId
+        && batch.events.every(event => channelReplyAllowed(current, channel.id, event.payload.actorId, targetId,
+          event.payload.conversationType, event.payload.isChannelConversation === true))
+    }
+    if (!allowed()) return 'filtered'
+
+    for (const event of batch.events) {
+      if (event.payload.replyContextToken) this.contextTokens.set(contextTokenKey(channel.accountId, event.payload.actorId), event.payload.replyContextToken)
+      await this.markInbound(channel.id, event.payload.actorId)
+    }
+    const text = renderCoalescedUserText(batch.events.map(event => event.payload), channel.direct?.botUsername ? { botUsername: channel.direct.botUsername } : {})
+    const latest = batch.events.at(-1)?.payload
+    if (first.platform === 'mattermost' && latest && !hasSubstantiveMattermostText(latest.text) && latest.attachments.length === 0) {
+      // 复用本地渠道诊断同步到浏览器 DevTools，提示任务焦点使用了同批或历史回退。
+      this.diagnose({ level: 'warn', platform: 'mattermost', channelId: channel.id, phase: 'task-focus-fallback',
+        detail: '本批最新消息去除 @提及后不足三个字符；已回退到最近的实质 USER 内容，必要时 Agent 只询问一个澄清问题。',
+        messageId: latest.externalMessageId, conversationId: latest.channelId ?? latest.conversationId, senderId: latest.actorId,
+        metadata: { batchId: batch.batch.id, eventCount: batch.events.length },
+      })
+    }
+    const maxPromptBytes = first.platform === 'mattermost' ? 48 * 1024 : DEFAULT_INBOX_BATCH_POLICY.maxTextBytes
+    if (Buffer.byteLength(text, 'utf8') > maxPromptBytes) {
+      throw new PermanentInboxError(`合并消息超过 ${Math.round(maxPromptBytes / 1024)} KB 上限，已保留在诊断队列中`)
+    }
+
+    const credentials = await this.credentials.read(channel.id)
+    const weixin = first.platform === 'weixin' ? new WeixinApi(credentials.baseUrl, credentials.botToken) : undefined
+    let directRoot: DirectTransport | undefined
+    let directTarget: DirectTransport | undefined
+    const ownsDirectRoot = first.platform === 'mattermost' && !this.directTransports.has(channel.id)
+    try {
+      if (first.platform === 'mattermost') {
+        if (!channel.direct || !targetId) throw new PermanentInboxError('Mattermost 私聊缺少已验证的目标会话 ID')
+        directRoot = this.directTransports.get(channel.id) ?? new DirectTransport(
+          { platform: 'mattermost', baseUrl: credentials.baseUrl, targetId: channel.direct.targetId,
+            ...(channel.direct.allowedChannelIds ? { allowedChannelIds: channel.direct.allowedChannelIds } : {}) },
+          credentials.botToken,
+          { accountId: channel.accountId, peerId: channel.direct.peerId },
+        )
+        const authorize = () => { if (!allowed()) throw new Error('Mattermost 联系人或渠道授权已变化') }
+        directTarget = first.conversationType === 'thread'
+          ? directRoot.forThread(targetId, first.threadRootId!, channel.accountId, authorize, first.isChannelConversation ? 'channel' : 'dm')
+          : directRoot.forTarget(targetId, { accountId: channel.accountId, peerId: first.actorId }, authorize)
+        await directTarget.validate(signal)
+      }
+
+      const route = this.store.snapshot().sessions.find(item => item.companionId === channel.companionId && item.inboxConversationKey === first.conversationKey)
+      if (batch.events.length === 1 && text.trim() && route
+        && await this.answerPendingQuestion(route.sessionId, text, channel, weixin ?? directTarget!, first.actorId, signal)) {
+        await this.rememberReceipts(batch.events.map(event => `${channel.id}:${event.externalEventId}`))
+        return 'completed'
+      }
+
+      const attachments = await this.loadInboxAttachments(batch.events.map(event => event.payload), channel, directTarget, signal, allowed)
+      if (!text.trim() && attachments.length === 0) return 'completed'
+      if (!allowed()) return 'filtered'
+      const companion = requiredCompanion(this.store, channel.companionId)
+      const token = batch.events.at(-1)?.payload.replyContextToken
+        ?? this.contextTokens.get(contextTokenKey(channel.accountId, first.actorId))
+      const authored = weixin
+        ? new AuthoredProgress(value => weixin.sendText(first.actorId, value, token, signal), allowed, signal, 8)
+        : undefined
+      const updates: ReplyProgress = Object.assign(authored?.update ?? (() => {}), {
+        ...(authored?.update.acknowledge ? { acknowledge: authored.update.acknowledge } : {}),
+        lifecycle: this.agentLifecycle(first.platform, channel.id, first.externalMessageId,
+          first.channelId ?? first.conversationId, first.actorId, { batchId: batch.batch.id, eventCount: batch.events.length }),
+        sendChat: async (parts: import('../chat/protocol.js').ChatPart[], routeId: string, key: string) => {
+          signal.throwIfAborted()
+          if (!allowed()) throw new Error('渠道或联系人授权已变化，中途消息未发送')
+          await this.sendChatReply(channel, first.actorId, key, { text: '', attachments: [], chatParts: parts, chatOriginRouteId: routeId }, undefined, targetId, first.conversationType === 'thread' ? first.threadRootId : undefined, first.isChannelConversation === true)
+        },
+      })
+      let reply: PartnerReply
+      const dispatchStartedAt = Date.now()
+      this.diagnose({
+        level: 'log', platform: first.platform, channelId: channel.id, phase: 'agent-dispatch-starting',
+        detail: '授权、批次和附件校验已通过，正在调用 DSH Agent。', messageId: first.externalMessageId,
+        conversationId: first.channelId ?? first.conversationId, senderId: first.actorId,
+        metadata: { batchId: batch.batch.id, eventCount: batch.events.length, attachmentCount: attachments.length },
+      })
+      try {
+        reply = await this.agents.reply(companion, channel.id, first.actorId, {
+          text,
+          attachments,
+          inboxConversation: inboxSessionIdentity(first),
+        }, updates)
+      } catch (error) {
+        this.diagnose({
+          level: 'error', platform: first.platform, channelId: channel.id, phase: 'agent-dispatch-error',
+          detail: error instanceof Error ? error.message : String(error), messageId: first.externalMessageId,
+          conversationId: first.channelId ?? first.conversationId, senderId: first.actorId,
+          metadata: { batchId: batch.batch.id, eventCount: batch.events.length, durationMs: Date.now() - dispatchStartedAt },
+        })
+        throw error
+      } finally { await authored?.finish() }
+      if (!hasDeliverableChannelReply(reply)) {
+        const detail = 'DSH Agent 本轮没有生成可投递回复；批次不会标记完成或自动重放。'
+        this.diagnose({
+          level: 'error', platform: first.platform, channelId: channel.id, phase: 'agent-empty-reply',
+          detail, messageId: first.externalMessageId, conversationId: first.channelId ?? first.conversationId,
+          senderId: first.actorId, metadata: { batchId: batch.batch.id, eventCount: batch.events.length, durationMs: Date.now() - dispatchStartedAt },
+        })
+        throw new PermanentInboxError(detail)
+      }
+      this.diagnose({
+        level: 'log', platform: first.platform, channelId: channel.id, phase: 'agent-dispatch-returned',
+        detail: 'DSH Agent 已返回结果，正在执行最终渠道投递。', messageId: first.externalMessageId,
+        conversationId: first.channelId ?? first.conversationId, senderId: first.actorId,
+        metadata: { batchId: batch.batch.id, eventCount: batch.events.length, durationMs: Date.now() - dispatchStartedAt },
+      })
+      signal.throwIfAborted()
+      if (!allowed()) return 'filtered'
+
+      const receiptKey = batch.events.map(event => `${channel.id}:${event.externalEventId}`).join('|')
+      let fullyDelivered = true
+      if (reply.chatParts) {
+        await this.rememberReceipts(batch.events.map(event => `${channel.id}:${event.externalEventId}`))
+        await this.sendChatReply(channel, first.actorId, receiptKey, reply, undefined, targetId, first.conversationType === 'thread' ? first.threadRootId : undefined, first.isChannelConversation === true)
+      } else if (!reply.alreadyDelivered) {
+        const replyText = reply.text || (reply.attachments.length ? '已生成附件，正在发送。' : '')
+        if (replyText) {
+          if (weixin) await weixin.sendText(first.actorId, replyText, token, signal)
+          else await directTarget!.sendText(first.actorId, replyText, undefined, signal)
+        }
+        for (const attachment of reply.attachments) {
+          if (!allowed()) throw new Error('渠道或联系人授权已撤销')
+          try {
+            if (weixin) await weixin.sendAttachment(first.actorId, attachment, token, signal)
+            else await directTarget!.sendAttachment(first.actorId, attachment, undefined, signal, allowed)
+          } catch (error) {
+            fullyDelivered = false
+            throw new Error(`渠道附件发送失败：${error instanceof Error ? error.message : String(error)}`)
+          }
+        }
+      }
+      if (reply.postReplySource && fullyDelivered && (reply.text.trim() || reply.attachments.length || reply.chatParts?.length)) {
+        await this.agents.replyDelivered(reply.postReplySource).catch(error => this.ctx.logger.warn(`主动延续登记失败：${String(error)}`))
+      }
+      await this.rememberReceipts(batch.events.map(event => `${channel.id}:${event.externalEventId}`))
+      return 'completed'
+    } finally {
+      directTarget?.close()
+      if (ownsDirectRoot) directRoot?.close()
+    }
+  }
+
+  private async loadInboxAttachments(
+    envelopes: readonly InboundEnvelope[],
+    channel: WeixinChannel,
+    direct: DirectTransport | undefined,
+    signal: AbortSignal,
+    allowed: () => boolean,
+  ): Promise<PartnerInboundAttachment[]> {
+    const expectedCount = envelopes.reduce((count, envelope) => count + envelope.attachments.length, 0)
+    if (expectedCount > DEFAULT_INBOX_BATCH_POLICY.maxAttachments) throw new PermanentInboxError('一个消息批次最多接收 8 个附件')
+    const attachments: PartnerInboundAttachment[] = []
+    let remaining = PARTNER_MEDIA_MAX_BYTES
+    for (const envelope of envelopes) {
+      if (envelope.platform === 'weixin') {
+        const sources = envelope.weixinMediaSources ?? []
+        if (sources.length !== envelope.attachments.length) throw new PermanentInboxError('微信附件续读引用不完整，未将不完整内容交给 Agent')
+        for (const source of sources) {
+          signal.throwIfAborted()
+          if (!allowed()) throw new Error('微信渠道或联系人授权已撤销')
+          const attachment = await receiveWeixinMedia(restoreWeixinMediaSource(source), signal)
+          if (!attachment) throw new PermanentInboxError('微信附件内容无法从持久化来源续读')
+          remaining -= attachment.data.byteLength
+          if (remaining < 0) throw new PermanentInboxError('合并批次附件总大小超过 64 MB')
+          attachments.push(attachment)
+        }
+        continue
+      }
+      if (envelope.attachments.length === 0) continue
+      if (!direct || !channel.direct) throw new Error('Mattermost 附件传输尚未就绪')
+      const targetId = envelope.channelId ?? envelope.conversationId
+      const message: DirectMessage = {
+        id: envelope.externalMessageId,
+        sender: envelope.actorId,
+        text: envelope.text,
+        targetId,
+        media: envelope.attachments.map(item => ({
+          source: item.externalAttachmentId,
+          name: item.fileName,
+          ...(item.contentType === undefined ? {} : { mediaType: item.contentType }),
+          ...(item.sizeBytes === undefined ? {} : { size: item.sizeBytes }),
+        })),
+      }
+      const received = await direct.receiveAttachments(message, signal, allowed, remaining)
+      for (const attachment of received) {
+        remaining -= attachment.data.byteLength
+        if (remaining < 0) throw new PermanentInboxError('合并批次附件总大小超过 64 MB')
+        attachments.push(attachment)
+      }
+      if (received.length !== envelope.attachments.length) throw new PermanentInboxError('Mattermost 附件未完整下载，未将不完整内容交给 Agent')
+    }
+    return attachments
+  }
+
+  private canSteerInboxBatch(active: ClaimedInboxBatch, incoming: ClaimedInboxBatch): boolean {
+    const current = active.events.at(-1)?.payload
+    const additions = incoming.events.map(event => event.payload)
+    if (!current || additions.length === 0 || additions.some(item => item.conversationKey !== current.conversationKey)) return false
+    const first = additions[0]!
+    if (first.platform === 'mattermost') {
+      // 仅同账号、同配置、同 DM/频道与同一发言人的精确来源可插入；正文语义交由活跃 DSH Agent 判断。
+      if (current.platform !== 'mattermost' || !['dm', 'thread'].includes(current.conversationType)) return false
+      if (additions.some(item => item.platform !== 'mattermost'
+        || item.accountId !== current.accountId || item.channelConfigId !== current.channelConfigId
+        || item.conversationType !== current.conversationType || item.conversationId !== current.conversationId
+        || item.channelId !== current.channelId || item.actorId !== current.actorId
+        || item.isChannelConversation !== current.isChannelConversation)) return false
+      if (current.conversationType === 'thread' && additions.some(item => item.threadRootId !== current.threadRootId)) return false
+      return true
+    }
+    if (first.platform !== 'weixin' || current.platform !== 'weixin') return false
+    if (additions.some(item => item.actorId !== current.actorId || item.platform !== 'weixin')) return false
+    // 微信没有可靠 Thread 来源，仍只让明确标记的补充进入运行中任务。
+    return additions.every(item => item.text.trimStart().match(/^(补充|更正|追加)\s*[:：]/) !== null)
+  }
+
+  private async steerInboxBatch(active: ClaimedInboxBatch, incoming: ClaimedInboxBatch, signal: AbortSignal): Promise<boolean> {
+    const first = incoming.events[0]?.payload
+    if (!first) return false
+    const state = this.store.snapshot()
+    const channel = state.channels.find(item => item.id === first.channelConfigId)
+    const targetId = first.platform === 'mattermost' ? (first.channelId ?? first.conversationId) : undefined
+    if (!channel || !channel.enabled || channel.accountId !== first.accountId || !channelReplyAllowed(state, channel.id, first.actorId, targetId,
+      first.conversationType, first.isChannelConversation === true)) return false
+    const allowed = (): boolean => {
+      const latest = this.store.snapshot()
+      const current = latest.channels.find(item => item.id === channel.id)
+      return !!current?.enabled && current.accountId === first.accountId
+        && incoming.events.every(event => channelReplyAllowed(latest, channel.id, event.payload.actorId,
+          event.payload.platform === 'mattermost' ? (event.payload.channelId ?? event.payload.conversationId) : undefined,
+          event.payload.conversationType, event.payload.isChannelConversation === true))
+    }
+    const credentials = await this.credentials.read(channel.id)
+    let directRoot: DirectTransport | undefined
+    let directTarget: DirectTransport | undefined
+    const ownsDirectRoot = first.platform === 'mattermost' && !this.directTransports.has(channel.id)
+    try {
+      if (first.platform === 'mattermost') {
+        if (!targetId || !channel.direct) return false
+        directRoot = this.directTransports.get(channel.id) ?? new DirectTransport(
+          { platform: 'mattermost', baseUrl: credentials.baseUrl, targetId: channel.direct.targetId,
+            ...(channel.direct.allowedChannelIds ? { allowedChannelIds: channel.direct.allowedChannelIds } : {}) },
+          credentials.botToken,
+          { accountId: channel.accountId, peerId: channel.direct.peerId },
+        )
+        const authorize = () => { if (!allowed()) throw new Error('Mattermost 联系人或渠道授权已变化') }
+        directTarget = first.conversationType === 'thread'
+          ? directRoot.forThread(targetId, first.threadRootId!, first.accountId, authorize, first.isChannelConversation ? 'channel' : 'dm')
+          : directRoot.forTarget(targetId, { accountId: first.accountId, peerId: first.actorId }, authorize)
+        await directTarget.validate(signal)
+      } else {
+        for (const event of incoming.events) if (event.payload.replyContextToken) this.contextTokens.set(contextTokenKey(channel.accountId, event.payload.actorId), event.payload.replyContextToken)
+      }
+      const attachments = await this.loadInboxAttachments(incoming.events.map(event => event.payload), channel, directTarget, signal, allowed)
+      if (!allowed()) return false
+      return this.agents.steer(requiredCompanion(this.store, channel.companionId), channel.id, first.actorId, {
+        text: first.platform === 'mattermost'
+          ? renderMattermostSteerUserText(incoming.events.map(event => event.payload), channel.direct?.botUsername ? { botUsername: channel.direct.botUsername } : {})
+          : renderCoalescedUserText(incoming.events.map(event => event.payload)),
+        attachments,
+        inboxConversation: inboxSessionIdentity(first),
+      })
+    } finally {
+      directTarget?.close()
+      if (ownsDirectRoot) directRoot?.close()
+    }
   }
 
   private diagnoseWeixinMessage(channel: WeixinChannel, message: WeixinRawMessage): void {
@@ -804,7 +1306,7 @@ export class ChannelManager {
     if (this.store.snapshot().recentReceipts.includes(receipt)) return
     const items = message.item_list ?? []
     const text = extractText(items)
-    const tokenKey = `${channel.id}:${userId}`
+    const tokenKey = contextTokenKey(channel.accountId, userId)
     if (message.context_token) this.contextTokens.set(tokenKey, message.context_token)
     const pairing = this.store.snapshot().pairings.find(item => item.channelId === channel.id && item.userId === userId)
     if (pairing?.status !== 'approved') {
@@ -853,7 +1355,7 @@ export class ChannelManager {
     }
     const authored = new AuthoredProgress(text => api.sendText(userId, text, this.contextTokens.get(tokenKey), signal),
       () => channelReplyAllowed(this.store.snapshot(), channel.id, userId) && this.store.snapshot().channels.some(c => c.id === channel.id && c.enabled && c.companionId === companion.id), signal,8)
-    const updates:ReplyProgress=Object.assign(authored.update,{sendChat:async(parts:import('../chat/protocol.js').ChatPart[],routeId:string,key:string)=>{
+    const updates:ReplyProgress=Object.assign(authored.update,{lifecycle:this.agentLifecycle('weixin',channel.id,eventId,userId,userId),sendChat:async(parts:import('../chat/protocol.js').ChatPart[],routeId:string,key:string)=>{
       signal.throwIfAborted();await this.sendChatReply(channel,userId,key,{text:'',attachments:[],chatParts:parts,chatOriginRouteId:routeId})
     }})
     const reply = await this.agents.reply(companion, channel.id, userId, { text: inboundText, attachments }, updates).finally(() => authored.finish())
@@ -927,7 +1429,7 @@ export class ChannelManager {
       if (this.pendingQuestions.get(route.sessionId) !== pending
         || !fresh.channels.some(item => item.id === channel.id && item.enabled && item.companionId === route.companionId && item.accountId === channel.accountId && item.platform === channel.platform && item.direct?.baseUrl === channel.direct?.baseUrl)
         || !channelReplyAllowed(fresh,channel.id,route.userId,api instanceof DirectTransport?api.config.targetId:undefined)) throw new Error('提问来源或授权已变化，取消发送')
-      await api.sendText(route.userId, renderQuestions(request.questions), this.contextTokens.get(`${channel.id}:${route.userId}`), lifetime)
+      await api.sendText(route.userId, renderQuestions(request.questions), this.contextTokens.get(contextTokenKey(channel.accountId, route.userId)), lifetime)
       if (api instanceof DirectTransport && cursor !== undefined) {
         receiver = this.receiveDirectAnswer(pending, channel, api, cursor, polling.signal).catch(error => {
           if (!polling.signal.aborted) pending.reject(error)
@@ -1018,7 +1520,9 @@ export class ChannelManager {
   private async directLoop(channel: WeixinChannel, outerSignal: AbortSignal): Promise<void> {
     if (!channel.direct || !channel.platform || channel.platform==='weixin') throw new Error('渠道配置无效')
     const credential = await this.credentials.read(channel.id)
-    const api = new DirectTransport({platform:channel.platform,baseUrl:credential.baseUrl,targetId:channel.direct.targetId,...(channel.qq?{qq:channel.qq}:{})},credential.botToken,{accountId:channel.accountId,peerId:channel.direct.peerId})
+    const api = new DirectTransport({platform:channel.platform,baseUrl:credential.baseUrl,targetId:channel.direct.targetId,
+      ...(channel.platform==='mattermost'?{allowedChannelIds:channel.direct.allowedChannelIds??[]}:{}),...(channel.qq?{qq:channel.qq}:{})},
+      credential.botToken,{accountId:channel.accountId,peerId:channel.direct.peerId})
     if (channel.platform === 'mattermost' && this.durableInbox) {
       this.directTransports.set(channel.id, api)
       try { await this.pollMattermostInbox(channel, api, outerSignal) }
@@ -1113,53 +1617,151 @@ export class ChannelManager {
     if(dispatchError&&!outerSignal.aborted)throw new DirectDeliveryError()
   }
 
-  /** Persist Mattermost DM pages and their high-watermark before the poll loop continues. Phase 3 adds a consumer. */
+  /** 按私聊及每个允许频道分别续读 Mattermost 收件，并原子提交消息与游标。 */
   private async pollMattermostInbox(channel: WeixinChannel, api: DirectTransport, signal: AbortSignal): Promise<void> {
     if (!channel.direct || channel.platform !== 'mattermost' || !this.durableInbox) throw new Error('Mattermost Durable Inbox is unavailable')
     let failures = 0
-    const existing = this.durableInbox.cursors.get(channel.id)
-    if (!existing) {
-      const legacy = legacyMattermostHighWatermark(channel.direct.cursor)
-      if (legacy !== undefined) this.durableInbox.cursors.commit({
-        channelConfigId: channel.id, platform: 'mattermost', cursorType: 'timestamp',
-        cursorJson: JSON.stringify({ sinceMs: legacy }), highWatermark: legacy, updatedAt: Date.now(),
+    const dmScope = 'mattermost-dm'
+    const legacy = this.durableInbox.cursors.get(channel.id)
+    if (!this.durableInbox.cursors.get(channel.id, dmScope)) {
+      const legacyCursor = legacyMattermostHighWatermark(legacy?.highWatermark === undefined ? channel.direct.cursor : String(legacy.highWatermark))
+      if (legacyCursor !== undefined) this.durableInbox.cursors.commit({
+        channelConfigId: channel.id, scopeId: dmScope, platform: 'mattermost', cursorType: 'timestamp',
+        cursorJson: JSON.stringify({ sinceMs: legacyCursor }), highWatermark: legacyCursor, updatedAt: Date.now(),
       })
     }
+
+    const persist = async (
+      batch: Awaited<ReturnType<DirectTransport['poll']>>,
+      scopeId: string,
+      previous: ReturnType<NonNullable<typeof this.durableInbox>['cursors']['get']>,
+      isChannelConversation: boolean,
+      transport: DirectTransport,
+    ): Promise<void> => {
+      const receivedAt = Date.now(), state = this.store.snapshot()
+      const currentChannel = state.channels.find(item => item.id === channel.id)
+      const historyRounds = effectiveMattermostHistoryRounds(currentChannel?.direct?.threadHistoryRounds)
+      const items = batch.messages.map(message => mattermostInboxItem(channel, message,
+        (userId, targetId, conversationType, isChannel) => channelReplyAllowed(state, channel.id, userId, targetId, conversationType, isChannel),
+        receivedAt, isChannelConversation))
+      if (channel.platform === 'mattermost') for (const item of items) item.envelope.mattermostContextRounds = historyRounds
+      if (!isChannelConversation) {
+        const dmThreads = new Map<string, typeof items>()
+        for (const item of items) {
+          const envelope = item.envelope
+          if (item.status !== 'ready' || envelope.platform !== 'mattermost' || envelope.conversationType !== 'thread' || !envelope.threadRootId) continue
+          const key = `${envelope.channelId ?? envelope.conversationId}:${envelope.threadRootId}`
+          const group = dmThreads.get(key) ?? []
+          group.push(item)
+          dmThreads.set(key, group)
+        }
+        for (const group of dmThreads.values()) {
+          const first = group[0]!.envelope
+          const targetId = first.channelId ?? first.conversationId
+          const rootId = first.threadRootId!
+          const authorize = () => {
+            const latest = this.store.snapshot()
+            if (!latest.channels.some(entry => entry.id === channel.id && entry.enabled && entry.accountId === first.accountId)
+              || group.some(item => !channelReplyAllowed(latest, channel.id, item.envelope.actorId, targetId, 'thread', false))) {
+              throw new Error('Mattermost DM Thread 授权已变化，拒绝读取历史')
+            }
+          }
+          const threadTransport = transport.forThread(targetId, rootId, channel.accountId, authorize, 'dm')
+          try {
+            // 历史轮数按渠道配置读取；触发帖始终单独放在本轮用户请求中。
+            const sourcePostIds = group.map(item => item.envelope.externalMessageId)
+            const context = await threadTransport.readMattermostThread(rootId, signal, historyRounds * 6, sourcePostIds)
+            for (const item of group) item.envelope.mattermostContext = context
+          } finally { threadTransport.close() }
+        }
+      }
+      for (const item of items) {
+        if (item.status !== 'filtered' || item.envelope.isBotMessage) continue
+        const targetId = item.envelope.channelId
+        if (!targetId) continue
+        const { request, created } = await this.ensurePendingPairing(
+          channel, item.envelope.actorId, item.envelope.actorName ?? item.envelope.actorId,
+          item.envelope.isChannelConversation ? undefined : targetId,
+          item.envelope.isChannelConversation ? targetId : undefined,
+        )
+        if (!created || !request) continue
+        this.diagnose({ level: 'warn', platform: 'mattermost', channelId: channel.id, phase: 'pairing-pending',
+          detail: item.envelope.isChannelConversation ? '频道联系人授权待批准；未获批准消息不会发回频道或交给 Agent。'
+            : '新私聊联系人等待批准；未批准消息正文不会进入 Agent。',
+          messageId: item.envelope.externalMessageId, conversationId: targetId, senderId: item.envelope.actorId })
+        if (item.envelope.isChannelConversation) continue
+        try {
+          // 仅 DM 可把配对码发回已验证的原始双人会话；频道未经批准时保持静默。
+          const targetApi = transport.forTarget(targetId, { accountId: channel.accountId, peerId: item.envelope.actorId }, () => {
+            const current = this.store.snapshot()
+            if (!current.channels.some(entry => entry.id === channel.id && entry.enabled)
+              || !current.pairings.some(entry => entry.channelId === channel.id && entry.userId === item.envelope.actorId && entry.status === 'pending' && entry.directTargetId === targetId)) throw new Error('配对请求或 Mattermost 渠道已变化，取消提示发送')
+          })
+          try { await targetApi.sendText(item.envelope.actorId, this.pairingPrompt(request), undefined, signal) }
+          finally { targetApi.close() }
+          this.diagnose({ level: 'log', platform: 'mattermost', channelId: channel.id, phase: 'pairing-notice-sent', detail: '私聊配对审批提示已发送到来源 DM。', messageId: item.envelope.externalMessageId, conversationId: targetId, senderId: item.envelope.actorId })
+        } catch (error) {
+          this.diagnose({ level: 'error', platform: 'mattermost', channelId: channel.id, phase: 'pairing-notice-error', detail: error instanceof Error ? error.message : String(error), conversationId: targetId, senderId: item.envelope.actorId })
+        }
+      }
+      const highWatermark = mattermostHighWatermark(batch.cursor, previous?.highWatermark)
+      const batchPolicy = channel.platform === 'mattermost' ? MATTERMOST_INBOX_BATCH_POLICY : DEFAULT_INBOX_BATCH_POLICY
+      const result = this.durableInbox!.events.persistPage(items, {
+        channelConfigId: channel.id, scopeId, platform: 'mattermost', cursorType: 'timestamp',
+        cursorJson: JSON.stringify({ sinceMs: highWatermark }), highWatermark, updatedAt: receivedAt,
+      }, batchPolicy)
+      this.diagnose({ level: 'log', platform: 'mattermost', channelId: channel.id, phase: 'inbox-persisted',
+        detail: `Mattermost ${isChannelConversation ? '频道' : 'DM'} 事件与独立游标已一起提交。`,
+        metadata: { scopeId, inserted: result.inserted, duplicate: result.duplicate, coalesced: result.coalesced, highWatermark } })
+      if (result.newEventIds.length) {
+        await this.sendInboxAcknowledgements(result.newEventIds, api, signal)
+        this.inboxDispatcher?.notify()
+      }
+    }
+
     while (!signal.aborted) {
       try {
-        const previous = this.durableInbox.cursors.get(channel.id)
-        const batch = await api.poll(mattermostSinceCursor(previous), signal, 0)
-        this.diagnose({ level: 'log', platform: 'mattermost', channelId: channel.id, phase: 'poll-page', detail: `Mattermost DM 轮询返回 ${batch.messages.length} 条消息。`, metadata: { messageCount: batch.messages.length, hasCursor: Boolean(batch.cursor) } })
-        for (const message of batch.messages) this.diagnoseDirectMessage(channel, message)
-        const highWatermark = mattermostHighWatermark(batch.cursor, previous?.highWatermark)
-        const receivedAt = Date.now(), state = this.store.snapshot()
-        const items = batch.messages.map(message => mattermostInboxItem(channel, message,
-          userId => channelReplyAllowed(state, channel.id, userId), receivedAt))
-        for (const item of items) {
-          if (item.status !== 'filtered' || item.envelope.isBotMessage) continue
-          const targetId = item.envelope.channelId
-          if (!targetId) continue
-          const { request, created } = await this.ensurePendingPairing(channel, item.envelope.actorId, item.envelope.actorName ?? item.envelope.actorId, targetId)
-          if (!created || !request) continue
-          this.diagnose({ level: 'warn', platform: 'mattermost', channelId: channel.id, phase: 'pairing-pending', detail: '新联系人等待批准；未批准消息正文不会进入 Agent。', messageId: item.envelope.externalMessageId, conversationId: targetId, senderId: item.envelope.actorId })
+        const previousDm = this.durableInbox.cursors.get(channel.id, dmScope)
+        const dmBatch = await api.poll(mattermostSinceCursor(previousDm), signal, 0)
+        this.diagnose({ level: 'log', platform: 'mattermost', channelId: channel.id, phase: 'poll-page', detail: `Mattermost DM 轮询返回 ${dmBatch.messages.length} 条消息。`, metadata: { scopeId: dmScope, messageCount: dmBatch.messages.length, hasCursor: Boolean(dmBatch.cursor) } })
+        for (const message of dmBatch.messages) this.diagnoseDirectMessage(channel, message)
+        await persist(dmBatch, dmScope, previousDm, false, api)
+
+        const channelHistoryRounds = effectiveMattermostHistoryRounds(
+          this.store.snapshot().channels.find(item => item.id === channel.id)?.direct?.threadHistoryRounds,
+        )
+        for (const channelId of channel.direct.allowedChannelIds ?? []) {
+          signal.throwIfAborted()
+          const scopeId = `mattermost-channel:${channelId}`
+          const previous = this.durableInbox.cursors.get(channel.id, scopeId)
+          const room = api.forMattermostChannel(channelId, channel.accountId, () => {
+            const latest = this.store.snapshot().channels.find(item => item.id === channel.id)
+            if (!latest?.enabled || !latest.direct?.allowedChannelIds?.includes(channelId)) throw new Error('Mattermost 频道已被停用或撤销允许列表')
+          })
           try {
-            // 自动发现模式必须用入站帖子携带的已验证 DM ID 回发配对提示。
-            const targetApi = api.forTarget(targetId, { accountId: channel.accountId, peerId: item.envelope.actorId }, () => {
-              const current = this.store.snapshot()
-              if (!current.channels.some(entry => entry.id === channel.id && entry.enabled)
-                || !current.pairings.some(entry => entry.channelId === channel.id && entry.userId === item.envelope.actorId && entry.status === 'pending' && entry.directTargetId === targetId)) throw new Error('配对请求或 Mattermost 渠道已变化，取消提示发送')
-            })
-            await targetApi.sendText(item.envelope.actorId, this.pairingPrompt(request), undefined, signal)
-            this.diagnose({ level: 'log', platform: 'mattermost', channelId: channel.id, phase: 'pairing-notice-sent', detail: '配对审批提示已发送到来源 DM。', messageId: item.envelope.externalMessageId, conversationId: targetId, senderId: item.envelope.actorId })
-          } catch (error) {
-            this.diagnose({ level: 'error', platform: 'mattermost', channelId: channel.id, phase: 'pairing-notice-error', detail: error instanceof Error ? error.message : String(error), messageId: item.envelope.externalMessageId, conversationId: targetId, senderId: item.envelope.actorId })
-          }
+            const page = await room.poll(mattermostSinceCursor(previous), signal, 0)
+            // 频道内只接收他人明确 @机器人的帖子；机器人自己的回帖绝不能重新进入收件链路。
+            const selected = page.messages.filter(message => message.sender !== channel.accountId && message.isBotMentioned === true)
+            const contextByRoot = new Map<string, Awaited<ReturnType<DirectTransport['readMattermostThread']>>>()
+            for (const message of selected) {
+              if (!channelReplyAllowed(this.store.snapshot(), channel.id, message.sender, channelId, 'thread', true)) continue
+              const rootId = message.rootId ?? (message.isBotMentioned ? message.id : undefined)
+              if (!rootId) continue
+              let context = contextByRoot.get(rootId)
+              if (!context) {
+                // 当前批次触发帖子独立进入本轮任务；Thread API 按配置读取历史轮次。
+                const sourcePostIds = selected.filter(candidate => (candidate.rootId ?? (candidate.isBotMentioned ? candidate.id : undefined)) === rootId).map(candidate => candidate.id)
+                context = await room.readMattermostThread(rootId, signal, channelHistoryRounds * 6, sourcePostIds)
+                contextByRoot.set(rootId, context)
+              }
+              message.mattermostContext = context
+            }
+            const selectedBatch = { ...page, messages: selected }
+            this.diagnose({ level: 'log', platform: 'mattermost', channelId: channel.id, phase: 'poll-page', detail: `Mattermost 频道 ${channelId} 仅选取 ${selected.length} 条明确提及机器人的帖子。`, metadata: { scopeId, messageCount: selected.length, hasCursor: Boolean(page.cursor) } })
+            for (const message of selected) this.diagnoseDirectMessage(channel, message)
+            await persist(selectedBatch, scopeId, previous, true, api)
+          } finally { room.close() }
         }
-        const result = this.durableInbox.events.persistPage(items, {
-          channelConfigId: channel.id, platform: 'mattermost', cursorType: 'timestamp',
-          cursorJson: JSON.stringify({ sinceMs: highWatermark }), highWatermark, updatedAt: receivedAt,
-        })
-        this.diagnose({ level: 'log', platform: 'mattermost', channelId: channel.id, phase: 'inbox-persisted', detail: 'Mattermost 事件与高水位游标已一起提交。', metadata: { inserted: result.inserted, duplicate: result.duplicate, highWatermark } })
         failures = 0
         this.runtime.set(channel.id, { status: 'running' })
         await delay(10_000, signal)
@@ -1306,6 +1908,7 @@ export class ChannelManager {
         const agentStarted=Date.now()
         const updates:ReplyProgress=Object.assign(progress?.update??authored?.update??(()=>{}),{
           ...(authored?{acknowledge:authored.update.acknowledge!}:{}),
+          lifecycle:this.agentLifecycle(channel.platform ?? 'weixin',channel.id,event.id,event.targetId ?? channel.direct?.targetId ?? event.sender,event.sender),
           sendChat:async(parts:import('../chat/protocol.js').ChatPart[],routeId:string,key:string)=>{
             signal.throwIfAborted();if(!allowed())throw Error('渠道授权已变化，中途消息未发送')
             await this.sendChatReply(channel,event.sender,key,{text:'',attachments:[],chatParts:parts,chatOriginRouteId:routeId})
@@ -1386,6 +1989,55 @@ function stableEventId(message: WeixinRawMessage): string | undefined {
   if (id !== undefined && String(id).trim()) return `message:${String(id)}`
   if (message.seq !== undefined) return `seq:${message.seq}`
   return undefined
+}
+
+/** 微信续聊 token 仅按机器人账号与联系人隔离，不与渠道显示名或会话文本关联。 */
+function contextTokenKey(accountId: string, userId: string): string {
+  return `${accountId}:${userId}`
+}
+
+/** 只传递稳定渠道来源键；回复 token、原始消息或控制指令均不进入路由对象。 */
+function inboxSessionIdentity(envelope: InboundEnvelope): InboxSessionIdentity {
+  return {
+    conversationKey: envelope.conversationKey,
+    platform: envelope.platform,
+    conversationType: envelope.conversationType,
+    channelConfigId: envelope.channelConfigId,
+    accountId: envelope.accountId,
+    conversationId: envelope.conversationId,
+    ...(envelope.channelId === undefined ? {} : { channelId: envelope.channelId }),
+    ...(envelope.isChannelConversation ? { isChannelConversation: true } : {}),
+    ...(envelope.threadRootId === undefined ? {} : { threadRootId: envelope.threadRootId }),
+  }
+}
+
+/** 将 SQLite 中保存的微信附件引用还原为官方收件结构，供重启后安全续读。 */
+function restoreWeixinMediaSource(source: WeixinMediaSource): WeixinRawItem {
+  const media = {
+    ...(source.fullUrl === undefined ? {} : { full_url: source.fullUrl }),
+    ...(source.encryptQueryParam === undefined ? {} : { encrypt_query_param: source.encryptQueryParam }),
+    ...(source.aesKey === undefined ? {} : { aes_key: source.aesKey }),
+    ...(source.encryptType === undefined ? {} : { encrypt_type: source.encryptType }),
+  }
+  if (source.kind === 'image') {
+    return {
+      type: 2,
+      image_item: {
+        ...(source.fileName === undefined ? {} : { filename: source.fileName }),
+        ...(source.contentType === undefined ? {} : { content_type: source.contentType }),
+        ...(source.imageAesKey === undefined ? {} : { aeskey: source.imageAesKey }),
+        ...(Object.keys(media).length === 0 ? {} : { media }),
+      },
+    }
+  }
+  return {
+    type: 4,
+    file_item: {
+      ...(source.fileName === undefined ? {} : { file_name: source.fileName }),
+      ...(source.contentType === undefined ? {} : { content_type: source.contentType }),
+      ...(Object.keys(media).length === 0 ? {} : { media }),
+    },
+  }
 }
 
 export function extractText(items: WeixinRawItem[]): string {

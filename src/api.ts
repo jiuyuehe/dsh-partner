@@ -18,6 +18,7 @@ import { ChannelManager, requiredCompanion } from './channels/manager.js'
 import { WeixinLoginManager } from './channels/weixin/login.js'
 import { connectWeixin } from './channels/weixin/connect.js'
 import { DirectTransport, directConfig } from './channels/direct/transport.js'
+import { DEFAULT_MATTERMOST_HISTORY_ROUNDS, MAX_MATTERMOST_HISTORY_ROUNDS } from './channels/direct/mattermost-settings.js'
 import { DirectLoginCache } from './channels/direct/login-cache.js'
 import { memoryScope, PartnerAgentRuntime } from './agent-runtime.js'
 import { PartnerMemoryStore } from './memory-store.js'
@@ -458,14 +459,21 @@ async function dispatch(req: IncomingMessage, res: ServerResponse, prefix: strin
       try {
         const identity = await adapter.validate()
         if (segments[1] === 'test') {
-          return sendJson(res, 200, {ok: true, ...identity})
+          const mattermostChannels = config.platform === 'mattermost' && body.listMattermostChannels === true
+            ? await adapter.mattermostChannels() : undefined
+          return sendJson(res, 200, {ok: true, ...identity, ...(mattermostChannels ? { mattermostChannels } : {})})
         }
         const baseline = config.platform === 'qq' ? {cursor:'onebot-live'} : await adapter.poll(undefined, AbortSignal.timeout(35_000))
         if (config.platform !== 'qq') await new DirectTransport(config, botToken, identity).validate()
+        const mattermostChannels = config.platform === 'mattermost' ? await adapter.mattermostChannels() : undefined
+        if (config.platform === 'mattermost' && config.allowedChannelIds?.some(id => !mattermostChannels!.some(item => item.id === id))) {
+          throw httpError(400, '允许频道必须属于当前机器人已加入的 Mattermost 频道')
+        }
         const now = Date.now()
         const channel = {id:createId(config.platform),companionId,platform:config.platform,accountId:identity.accountId,
           name:text(body.name, 'name', 80),enabled:false,createdAt:now,updatedAt:now,
-          direct:{baseUrl:config.baseUrl,targetId:config.targetId,peerId:identity.peerId,cursor:baseline.cursor}}
+          direct:{baseUrl:config.baseUrl,targetId:config.targetId,peerId:identity.peerId,cursor:baseline.cursor,
+            ...(config.platform==='mattermost'?{allowedChannelIds:config.allowedChannelIds??[],mattermostChannels:mattermostChannels??[],threadHistoryRounds:DEFAULT_MATTERMOST_HISTORY_ROUNDS,...(identity.username?{botUsername:identity.username}:{})}:{})}}
         await runtime.credentials.write(channel.id,{baseUrl:config.baseUrl,botToken})
         try {
           await runtime.store.update(state=>{
@@ -507,7 +515,22 @@ async function dispatch(req: IncomingMessage, res: ServerResponse, prefix: strin
       mutation(req)
       const body = await readObject(req)
       if (typeof body.enabled !== 'boolean') throw httpError(400, 'enabled must be boolean')
-      await runtime.channels.setEnabled(id, body.enabled)
+      if (body.allowedChannelIds !== undefined) {
+        if (!Array.isArray(body.allowedChannelIds) || body.allowedChannelIds.length > 50 || body.allowedChannelIds.some(value => typeof value !== 'string')) throw httpError(400, 'Mattermost 允许频道列表无效')
+        await runtime.channels.updateMattermostAllowedChannels(id, body.allowedChannelIds as string[])
+      }
+      if (body.threadHistoryRounds !== undefined) {
+        if (typeof body.threadHistoryRounds !== 'number' || !Number.isSafeInteger(body.threadHistoryRounds)
+          || body.threadHistoryRounds < 0 || body.threadHistoryRounds > MAX_MATTERMOST_HISTORY_ROUNDS) {
+          throw httpError(400, `Mattermost Thread 历史轮数必须是 0–${MAX_MATTERMOST_HISTORY_ROUNDS} 的整数`)
+        }
+        if (runtime.store.snapshot().channels.find(channel => channel.id === id)?.platform !== 'mattermost') throw httpError(400, '只有 Mattermost 渠道支持 Thread 历史设置')
+        await runtime.channels.updateMattermostHistoryRounds(id, body.threadHistoryRounds)
+      }
+      if (body.allowedChannelIds !== undefined || body.threadHistoryRounds !== undefined) {
+        const latest = runtime.store.snapshot().channels.find(channel => channel.id === id)
+        if (latest && latest.enabled !== body.enabled) await runtime.channels.setEnabled(id, body.enabled)
+      } else await runtime.channels.setEnabled(id, body.enabled)
       return sendJson(res, 200, { ok: true })
     }
     if (id !== undefined && method === 'DELETE' && segments.length === 2) {
@@ -541,13 +564,26 @@ async function dispatch(req: IncomingMessage, res: ServerResponse, prefix: strin
     }
     if (id !== undefined && method === 'POST' && segments[2] === 'status' && segments.length === 3) {
       mutation(req)
-      const status = text((await readObject(req)).status, 'status', 20)
+      const body = await readObject(req)
+      const status = text(body.status, 'status', 20)
+      const channelId = body.channelId === undefined ? undefined : text(body.channelId, 'channelId', 120)
       if (status !== 'approved' && status !== 'blocked') throw httpError(400, 'pairing status is invalid')
       const pairing = runtime.store.snapshot().pairings.find(item => item.id === id)
       if (pairing === undefined) throw httpError(404, '配对请求不存在')
+      if (channelId) {
+        const owner = runtime.store.snapshot().channels.find(item => item.id === pairing.channelId)
+        if (owner?.platform !== 'mattermost' || !owner.direct?.allowedChannelIds?.includes(channelId)) throw httpError(400, '频道不在 Mattermost 允许列表中')
+      }
       await runtime.store.update(state => {
         const target = state.pairings.find(item => item.id === id)
-        if (target) { target.status = status; target.updatedAt = Date.now() }
+        if (!target) return
+        if (channelId) {
+          // Mattermost 频道许可独立于 DM status；审批或撤销不改动私聊权限。
+          target.allowedChannelIds = (target.allowedChannelIds ?? []).filter(value => value !== channelId)
+          target.pendingChannelIds = (target.pendingChannelIds ?? []).filter(value => value !== channelId)
+          if (status === 'approved') target.allowedChannelIds.push(channelId)
+        } else target.status = status
+        target.updatedAt = Date.now()
       })
       return sendJson(res, 200, { ok: true })
     }

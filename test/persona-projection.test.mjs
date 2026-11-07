@@ -26,15 +26,28 @@ test('chat projection replaces only stock identity and defers known tool guidanc
   assert.equal(discoveredToolProtocol({},'write'),undefined,'no cross-agent protocol')
 })
 
-test('custom preset identity and disabled role are preserved; native visible tools keep their guidance',()=>{
+test('custom preset identity is preserved; native visible tools keep their guidance',()=>{
   const a=fixture();a.sections[1].text+='\nUser custom instruction.'
   a.tools.push({name:'write',parameters:{type:'object'}})
   const agent={},r=projectConversationPrompt(a,agent,{roleEnabled:true,discovery:true})
   assert.ok(r.sections.includes(a.sections[1]));assert.ok(r.sections.includes(a.sections[3]))
   assert.equal(discoveredToolProtocol(agent,'write'),undefined)
-  const off=projectConversationPrompt(a,agent,{roleEnabled:false,discovery:false})
-  assert.deepEqual(off,a)
+  const off=projectConversationPrompt(fixture(),agent,{roleEnabled:false,discovery:false})
+  assert.ok(!off.sections.some(s=>s.name==='harness:identity'))
+  assert.ok(!off.sections.some(s=>s.name==='deployment:persona-prefix'))
+  assert.ok(off.sections.some(s=>s.name==='partner-identity'))
+  assert.ok(off.sections.some(s=>s.name==='security:approval'))
+  assert.ok(off.sections.some(s=>s.name==='ui:deliverable-file-references'))
   assert.equal(discoveredToolProtocol(agent,'job_output'),undefined,'do not retain stale guidance')
+})
+
+test('user-customized DSH identity text remains intact even when optional role chat is disabled',()=>{
+ const a=fixture()
+ a.sections[0].text+=' Keep this user-edited identity.'
+ a.sections[1].text+=' Keep this user-edited deployment guidance.'
+ const result=projectConversationPrompt(a,{}, {roleEnabled:false,discovery:false})
+ assert.ok(result.sections.includes(a.sections[0]))
+ assert.ok(result.sections.includes(a.sections[1]))
 })
 
 test('tool guidance is refreshed rather than accumulated across assemblies',()=>{

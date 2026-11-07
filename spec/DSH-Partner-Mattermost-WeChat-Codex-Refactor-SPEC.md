@@ -804,8 +804,11 @@ stateDiagram-v2
 
 Mattermost：
 
--   当前任务与新消息属于同一个 `threadRootId`，才允许自动考虑 Steer。
--   新线程绝不能插入旧线程。
+-   Mattermost DM：当前 Agent 仍在处理该 DM 来源时，同一已批准发言人的后续消息自动调用 DSH 原生 `agents.steer()`；不要求“补充/更正/追加”等文字前缀。
+-   Mattermost 频道：仅允许同一账号、同一渠道配置、同一 `channelId`、同一 `threadRootId` 和同一已批准发言人的后续消息插入当前 Agent。顶层帖子按其 root 归属，另一条 Thread 永不插入。
+-   每条插入事件均保留原始正文、`post_id`、发言人和来源元数据；由当前 DSH Agent 结合已有会话上下文判断它是当前目标的补充还是新的独立目标，不由连接器用关键词猜测。
+-   不同发言人、DM peer、Mattermost 账号/渠道配置、DM channel、频道或 Thread root 均不能互相 Steer。DSH 的当前回复来源所有权也必须匹配。
+-   如果没有精确匹配且仍运行的 DSH Agent 接受插入，保留 Inbox 记录，并在当前批次释放后按 FIFO 开始新的处理；不得将已接受的插入再执行一次。
 -   如果当前 Agent 已经完成当前轮次，不再 Steer，改为新一轮 Queue。
 -   如果 DSH 当前运行状态不允许插入，转为 Queue，不丢消息。
 
@@ -1801,6 +1804,7 @@ src/
                                       actorId            
 
   P5-10             附件              校验 file_ids      不跨频道读取
+  P5-11             执行中续接        同一获准发言人、同一 DM/Thread 的普通后续消息调用原生 steer；语义由 Agent 判断      精确来源插入；跨用户/DM/Thread 隔离；未接纳消息仍按 Inbox 续办
   -------------------------------------------------------------------------
 
 ### 通过条件

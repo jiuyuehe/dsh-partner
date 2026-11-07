@@ -23,7 +23,8 @@ function fixture(enabled = true) {
   const route = { companionId: companion.id, channelId:'@local', userId:'owner', kind:'local', sessionId:session.id }
   const config = { companion, route, revision:'1' }
   const runtime = Object.create(PartnerAgentRuntime.prototype)
-  Object.assign(runtime, { configurations:{ forSession:()=>config }, store:{snapshot:()=>({sessions:[route]})}, contextRevisions:new WeakMap(), characterContexts:new Map(),
+  // 测试夹具绕过运行时构造函数，需补上独立渠道上下文注册表。
+  Object.assign(runtime, { configurations:{ forSession:()=>config }, store:{snapshot:()=>({sessions:[route]})}, contextRevisions:new WeakMap(), characterContexts:new Map(), channelQuestionContexts:new Map(),
     memory:{ characterState:async()=>undefined, recallContext:async(...args)=>{calls.push(args);return {profile:{entries:[],version:'1'},relevant:[],connections:[],scenes:[],history:[]} } } })
   const input = text => session.append('user/message',createUserMessage({content:[{type:'text',text}],source:{kind:'user'}}),{surfaceOp:'append'})
   return { runtime, agent, config, calls, contexts, sections, input }

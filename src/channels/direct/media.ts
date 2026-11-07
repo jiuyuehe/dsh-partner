@@ -55,7 +55,7 @@ export class DirectMediaTransfer {
       } else {
         if (!/^[a-z0-9]{26}$/.test(ref.source)) throw new Error('Mattermost 附件 ID 无效')
         const info = await this.json(`/api/v4/files/${ref.source}/info`, signal)
-        if (info.id !== ref.source || info.post_id !== postId) throw new Error('Mattermost 附件不属于当前消息')
+        if (info.id !== ref.source || info.post_id !== postId || info.channel_id !== this.config.targetId) throw new Error('Mattermost 附件不属于当前消息或频道')
         name = info.name; mediaType = info.mime_type; size = info.size
         path = `/api/v4/files/${ref.source}`
       }
@@ -87,7 +87,7 @@ export class DirectMediaTransfer {
       const uploaded = await this.json('/api/v4/files', signal, body)
       const id = uploaded.file_infos?.[0]?.id
       if (typeof id !== 'string' || !/^[a-z0-9]{26}$/.test(id)) throw new Error('Mattermost 未返回有效的附件 ID')
-      const sent = await this.json('/api/v4/posts', signal, JSON.stringify({ channel_id: this.config.targetId, message: '', file_ids: [id] }), 'application/json')
+      const sent = await this.json('/api/v4/posts', signal, JSON.stringify({ channel_id: this.config.targetId, message: '', file_ids: [id], ...(this.config.threadRootId?{root_id:this.config.threadRootId}:{}) }), 'application/json')
       if (typeof sent.id !== 'string' || !sent.id) throw new Error('Mattermost 未确认附件消息')
     }
   }

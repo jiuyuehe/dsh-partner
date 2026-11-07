@@ -19,10 +19,11 @@ export function projectConversationPrompt(assembly: PromptAssembly, agent: Agent
   const moved = new Map<string, string[]>()
   const visible = new Set(assembly.tools.map(tool => tool.name))
   const sections = assembly.sections.flatMap(section => {
-    if(options.roleEnabled && section.name==='harness:identity' && section.text.trim()==='You are an AI agent powered by DeepSeek Harness.')return []
-    if (options.roleEnabled && section.name === 'deployment:persona-prefix'
+    // 伙伴会话始终使用伙伴身份；只移除 DSH 的精确默认身份句，不动用户改写过的预设。
+    if (section.name==='harness:identity' && section.text.trim()==='You are an AI agent powered by DeepSeek Harness.')return []
+    if (section.name === 'deployment:persona-prefix'
       && /^You are a coding agent powered by the [^\r\n]+ model\.$/.test(section.text.trim())) {
-      // Replace only the exact stock identity, never a user-edited preset.
+      // 默认模型身份会与伙伴长期行为准则冲突；仅匹配原样默认句，保留用户自定义内容。
       return []
     }
     if (options.roleEnabled && section.name === 'ui:deliverable-file-references') {
@@ -40,7 +41,8 @@ export function projectConversationPrompt(assembly: PromptAssembly, agent: Agent
     if(identity>0)sections.unshift(...sections.splice(identity,1))
   }
   protocols.set(agent, moved)
-  return { ...assembly, sections: options.roleEnabled&&options.exclusive ? sections.filter(section=>section.name==='partner-identity') : sections }
+  // 渠道路由是系统投递约束；独占人格不能移除这条防止等待本地输入的规则。
+  return { ...assembly, sections: options.roleEnabled&&options.exclusive ? sections.filter(section=>section.name==='partner-identity'||section.name==='partner-channel-routing') : sections }
 }
 
 /** Only exposed after discovery has checked the tool's live access. */

@@ -61,8 +61,8 @@ test('sticker library isolates companions, validates raster uploads and keeps pr
   await library.remove('a',added.id);await assert.rejects(library.image('a',added.id),/不存在/)
 })
 test('terminal tool snapshots stickers, respects revocation, and never sends to a channel itself',async t=>{
-  const root=await mkdtemp(join(tmpdir(),'chat-tool-'));t.after(()=>rm(root,{recursive:true,force:true}))
-  const deliveries=await AttachmentDeliveryService.open(join(root,'delivery'));t.after(()=>deliveries.close())
+  const root=await mkdtemp(join(tmpdir(),'chat-tool-'))
+  const deliveries=await AttachmentDeliveryService.open(join(root,'delivery'));t.after(async()=>{deliveries.close();await rm(root,{recursive:true,force:true})})
   const library=new StickerLibrary(owner=>join(root,owner)),card={enabled:true,segmentedReplies:true,stickersEnabled:true}
   const state={companions:[{id:'a',characterCard:card}],sessions:[{sessionId:'s',companionId:'a'}]}
   const store={snapshot:()=>state,isCompanionRemoving:()=>false}
@@ -84,9 +84,13 @@ test('terminal tool snapshots stickers, respects revocation, and never sends to 
   card.stickersEnabled=false
   await assert.rejects(tool.execute({messages:[{stickerId:'builtin-happy'}]},exec),/未开启/)
   assert.equal(conclusions,2)
-  card.enabled=false;await assert.rejects(tool.execute({messages:[{text:'x'}]},exec),/停用/)
-  card.enabled=true;events=[start];await assert.rejects(tool.execute({messages:[{text:'x'}]},exec),/内部任务/)
-  assert.equal(conclusions,2)
+  card.enabled=false
+  const plain=await tool.execute({messages:[{text:'x'}]},exec)
+  assert.deepEqual(plain.parts,[{type:'text',text:'x'}])
+  assert.equal(conclusions,3)
+  await assert.rejects(tool.execute({messages:[{stickerId:'builtin-happy'}]},exec),/角色表情需要启用角色聊天增强/)
+  events=[start];await assert.rejects(tool.execute({messages:[{text:'x'}]},exec),/内部任务/)
+  assert.equal(conclusions,3)
 })
 test('chat metadata projects into the native assistant renderer without registering a custom bubble',()=>{
   let definition
@@ -131,7 +135,7 @@ test('direct queued reply checks the original route and rechecks authorization b
   assert.throws(()=>manager.checkChatSource('c','u',reply),/变更/)
 })
 
-test('DSH tool runtime commits terminal success and presentation metadata, but never concludes a rejected call',async t=>{
+test('DSH tool runtime commits terminal success and keeps plain replies available when role chat is disabled',async t=>{
   const {Context}=await import('@deepseek-ai/cordis'),{ToolRuntime}=await import('@deepseek-ai/dsh-tools'),{createScope}=await import('@deepseek-ai/dsh-scope')
   const ctx=new Context();ctx.provide('systemPrompt',{tools:()=>()=>{}});new ToolRuntime(ctx)
   const card={enabled:true,segmentedReplies:true},store={snapshot:()=>({companions:[{id:'a',characterCard:card}],sessions:[{sessionId:'s',companionId:'a'}]}),isCompanionRemoving:()=>false}
@@ -141,7 +145,7 @@ test('DSH tool runtime commits terminal success and presentation metadata, but n
   const invoke=()=>ctx.tools.execute({callId:'reply-call',name:'partner_chat_reply',arguments:{messages:[{text:'第一条'},{text:'第二条'}]},agent,signal:new AbortController().signal})
   const success=await invoke();assert.equal(success.isError,false);assert.equal(success.concludesTurn,true)
   assert.equal(success.meta.kind,'partner-chat-v1');assert.equal(success.meta.parts.length,2)
-  card.enabled=false;const failure=await invoke();assert.equal(failure.isError,true);assert.equal(failure.concludesTurn,undefined)
+  card.enabled=false;const plain=await invoke();assert.equal(plain.isError,false);assert.equal(plain.concludesTurn,true)
 })
 
 test('memory observation receives structured spoken content without local attachment paths',async()=>{
@@ -260,6 +264,17 @@ test('single text chat tool normalizes latest real reply before metadata and del
  assert.deepEqual((await tool.execute({messages:[{text:code}]},exec)).parts,[{type:'text',text:code}])
  const explicit=[{text:'第一条\n保持边界'},{text:'第二条'}]
  assert.deepEqual((await tool.execute({messages:explicit},exec)).parts,explicit.map(p=>({type:'text',...p})))
+})
+
+test('ordinary text reply remains available when role chat is disabled',async()=>{
+ const state={companions:[{id:'a',characterCard:{enabled:false}}],sessions:[{sessionId:'s',companionId:'a'}]}
+ const store={snapshot:()=>state,isCompanionRemoving:()=>false}
+ const tool=chatTools('a',store,{}, {},{},'/partner-local/v1').find(t=>t.name==='partner_chat_reply')
+ let ended=0
+ const exec={signal:new AbortController().signal,concludeTurn(){ended++},agent:{session:{id:'s',snapshotEvents:()=>[start,user]}}}
+ const result=await tool.execute({messages:[{text:'你好，我看到了。'}]},exec)
+ assert.equal(ended,1)
+ assert.deepEqual(result.parts,[{type:'text',text:'你好，我看到了。'}])
 })
 
 test('chat line normalization preserves sticker order and total part limit',()=>{

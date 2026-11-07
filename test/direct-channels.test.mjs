@@ -67,7 +67,7 @@ for(const scenario of ['encrypted','group','changed-peer'])test(`Matrix rejects 
   await assert.rejects(api.validate())
   assert.ok(!s.requests.some(r=>r.method==='PUT'))
 })
-test('Mattermost accepts only DM, skips initial posts and thread messages',async t=>{
+test('Mattermost preserves verified DM routing and exposes thread roots for replies',async t=>{
   let roomType='D'
   const s=await server(t,req=>{
     if(req.url==='/api/v4/users/me')return {id:'bot'}
@@ -78,7 +78,11 @@ test('Mattermost accepts only DM, skips initial posts and thread messages',async
   })
   const api=new DirectTransport({platform:'mattermost',baseUrl:s.url,targetId:'dm'},'test-token')
   assert.deepEqual((await api.poll(undefined,new AbortController().signal)).messages,[])
-  assert.deepEqual((await api.poll('50',new AbortController().signal)).messages,[{id:'a',sender:'user',text:'hello',timestamp:100}])
+  const posts=(await api.poll('50',new AbortController().signal)).messages
+  assert.deepEqual(posts.map(({id,sender,text,targetId,rootId})=>({id,sender,text,targetId,rootId})),[
+    {id:'a',sender:'user',text:'hello',targetId:'dm',rootId:undefined},
+    {id:'b',sender:'user',text:'thread',targetId:'dm',rootId:'a'},
+  ])
   await api.sendText('user','reply',undefined)
   assert.ok(s.requests.some(r=>r.method==='POST'&&JSON.parse(r.body).channel_id==='dm'))
   await api.sendText('user','**bold**',undefined)
@@ -156,7 +160,7 @@ test('Matrix accepts only explicit unencrypted two-member DM invitations',async 
   assert.equal(s.requests.filter(r=>r.method==='POST').length,1)
   assert.ok(s.requests.find(r=>r.method==='POST').path.includes('safe'))
 })
-test('Mattermost discovers only DM rooms and preserves room routing',async t=>{
+test('Mattermost discovers only DM rooms and preserves room routing metadata',async t=>{
   const s=await server(t,req=>{
     if(req.url==='/api/v4/users/me')return {id:'bot'}
     if(req.url==='/api/v4/users/bot/channels')return {data:[{id:'dm',type:'D'},{id:'public',type:'O'}]}
@@ -166,7 +170,9 @@ test('Mattermost discovers only DM rooms and preserves room routing',async t=>{
   })
   const api=new DirectTransport({platform:'mattermost',baseUrl:s.url,targetId:''},'token')
   assert.deepEqual((await api.poll(undefined,new AbortController().signal)).messages,[])
-  assert.deepEqual((await api.poll('50',new AbortController().signal)).messages,[{id:'a',sender:'user',text:'pair',targetId:'dm',timestamp:100}])
+  const [message]=(await api.poll('50',new AbortController().signal)).messages
+  assert.equal(message.id,'a');assert.equal(message.sender,'user');assert.equal(message.text,'pair');assert.equal(message.targetId,'dm');assert.equal(message.timestamp,100)
+  assert.equal(message.isBotMentioned,false);assert.equal(message.updateAt,100)
   assert.ok(!s.requests.some(r=>r.path.includes('/channels/public')))
 })
 test('discovered contact must pair before model execution; another room cannot inherit approval',async()=>{

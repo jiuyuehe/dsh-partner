@@ -68,6 +68,7 @@ import { readStorageConfig } from './storage/bootstrap.js'
 import { SplitStatePersistence } from './storage/split-state.js'
 import { acquireStorageLease } from './storage/lease.js'
 import { DurableInbox } from './inbox/durable-inbox.js'
+import { partnerCodeExecutionTools, reconcileInterruptedCodeExecutions } from './execution/code-execution.js'
 
 export const Config = ConfigSchema
 export type Config = PartnerConfig
@@ -97,6 +98,8 @@ export function apply(context: Context, config: PartnerConfig): void {
     const migrated = storageConfig.storageVersion === 1
     const privateRoot = migrated ? layout.privateRoot : undefined
     const store = migrated ? await PartnerStore.openSplit(new SplitStatePersistence(layout.publicRoot,layout.privateRoot)) : await PartnerStore.open(resolved.statePath)
+    const interruptedCodeRuns = await reconcileInterruptedCodeExecutions(store)
+    if (interruptedCodeRuns > 0) ctx.logger.info(`dsh-partner: reconciled ${interruptedCodeRuns} interrupted Codex run(s)`)
     const storage = new StorageCoordinator(resolved.statePath,resolved.defaultCwd,storageConfig.storageVersion,{
       snapshot:()=>store.snapshot(),
       busy:()=>store.snapshot().companions.some(c=>agents.isCompanionBusy(c.id)||heartbeat.isRunning(c.id)||dailyReview.isRunning(c.id))||store.snapshot().executionRuns.some(run=>run.status==='running'||run.status==='queued'),
@@ -161,6 +164,9 @@ export function apply(context: Context, config: PartnerConfig): void {
     })
     const knowledgeMounts = new CompanionKnowledgeMounts(store, management, () => ctx.get('dshKnowledgeMountManagement'), id => partnerCwd(resolved.defaultCwd, id))
     const composer = new PartnerAgentComposition(store, skills, tasks, collaboration, scheduler, executor, companions, management, knowledgeMounts, requirements)
+    composer.setCodeExecutionToolFactory(id => partnerCodeExecutionTools(id, store, {
+      report: message => ctx.logger.info(`dsh-partner ${message}`),
+    }))
     const mcp = new McpService(store, new McpCredentials(ctx.credentials))
     composer.setMcpService(mcp)
     executor.setMcpTools(id => mcp.definitions(id))

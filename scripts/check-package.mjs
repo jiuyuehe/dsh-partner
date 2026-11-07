@@ -15,13 +15,17 @@ const { stdout } = await exec('tar', ['-tzf', archive], { maxBuffer: 8 * 1024 * 
 const paths = stdout.trim().split(/\r?\n/)
 assert.ok(paths.every(path => path.startsWith('package/') && !path.split('/').includes('..')))
 assert.ok(!paths.some(path => path.startsWith('package/resources/skills/novel-game-creation/upstream/examples/')), 'Optional example projects leaked into npm package')
-for (const file of ['lib/client.js', 'lib/client.pendant.js', 'lib/pendant-renderer.js', 'lib/index.js', 'cordis.patch.yml', 'lib/inbox/index.js', 'lib/inbox/index.d.ts', 'docs/dev/phase-1-data-model.md', 'docs/releases/2.24.1.md', 'src/inbox/migrations/001-inbox-schema.up.sql', 'src/inbox/migrations/001-inbox-schema.down.sql']) {
+for (const file of ['lib/client.js', 'lib/client.pendant.js', 'lib/pendant-renderer.js', 'lib/index.js', 'cordis.patch.yml', 'lib/inbox/index.js', 'lib/inbox/index.d.ts', 'docs/dev/phase-1-data-model.md', 'docs/dev/phase-3-coalescing.md', 'docs/dev/phase-4-wechat-session-routing.md', 'docs/dev/phase-5-mattermost.md', 'docs/releases/2.24.1.md', 'docs/releases/2.24.5.md', 'docs/releases/2.24.7.md', 'docs/releases/2.24.8.md', 'docs/releases/2.24.10.md', 'docs/releases/2.24.11.md', 'docs/releases/2.24.12.md', 'docs/releases/2.24.17.md', 'docs/releases/2.24.18.md', 'src/inbox/migrations/001-inbox-schema.up.sql', 'src/inbox/migrations/001-inbox-schema.down.sql', 'src/inbox/migrations/002-inbox-ack.up.sql', 'src/inbox/migrations/003-cursor-scopes.up.sql']) {
   assert.ok(paths.includes('package/' + file), `Missing runtime file: ${file}`)
 }
 const root = await mkdtemp(join(tmpdir(), 'partner-package-check-'))
 try {
   await exec('tar', ['-xzf', archive, '-C', root])
   const packageRoot = join(root, 'package')
+  const manifest = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8'))
+  const clientBundle = await readFile(join(packageRoot, 'lib/client.js'), 'utf8')
+  // 发布包的可见标题必须与 package.json 版本一致，避免用户无法辨认实际加载版本。
+  assert.ok(clientBundle.includes(`v${manifest.version}`), 'Client title must display the package version')
   const { loadBuiltinResources } = await import(pathToFileURL(join(packageRoot, 'lib/skills/builtin-resources.js')).href)
   const { BUILTIN_SKILLS } = await import(pathToFileURL(join(packageRoot, 'lib/skills/builtin.js')).href)
   const bundles = [...new Set([...BUILTIN_SKILLS.values()].map(skill => skill.resourceBundle).filter(Boolean))].sort()

@@ -97,6 +97,18 @@ test('chat reply through the gateway ends the turn and remains deliverable as na
  f.agent.session.append('turn/end',{turn:1,reason:{kind:'completed'}})
  assert.equal(channelReplyPartsAfter(f.agent.session.snapshotEvents(),0).chatParts[0].text,'好吧，被你抓到了。')
 })
+test('ordinary text chat reply through partner_tools stays available when role chat is disabled',async t=>{
+ const f=fixture(t)
+ f.companion.characterCard={enabled:false,segmentedReplies:false,stickersEnabled:false}
+ t.after(installToolDiscovery(f.scope.ctx.tools,'c',f.store,chatTools('c',f.store,{}, {},{},'/partner-local/v1').map(tool=>({tool,allowed:()=>true}))))
+ f.agent.session.append('turn/start',{turn:1})
+ f.agent.session.append('user/message',createUserMessage({source:{kind:'user'},content:[{type:'text',text:'你好'}]}),{surfaceOp:'append'})
+ const result=await f.call('partner_chat_reply',{messages:[{text:'你好，我在。'}]})
+ assert.equal(result.isError,false)
+ assert.equal(result.value.dispatch.isError,false)
+ assert.equal(result.concludesTurn,true)
+ assert.deepEqual(result.value.dispatch.meta.parts,[{type:'text',text:'你好，我在。'}])
+})
 test('revoked catalogue entries and recursive gateway calls never execute',async t=>{
  const f=fixture(t);let allowed=true
  t.after(installToolDiscovery(f.scope.ctx.tools,'c',f.store,[{tool:definition('partner_test'),allowed:()=>allowed}]))

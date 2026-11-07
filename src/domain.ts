@@ -6,6 +6,7 @@ import type { BoardTask, TaskActivity } from './tasks/domain.js'
 import type { BoardRequirement } from './requirements/domain.js'
 import type { PartnerDelegation } from './collaboration/domain.js'
 import type { ExecutionRun } from './execution/domain.js'
+import type { CodeExecutionRun } from './execution/code-domain.js'
 import type { ScheduledPartnerTask } from './scheduler/domain.js'
 import { isCompanionCapability, type CompanionCapability } from './capabilities.js'
 export type { CompanionCapability } from './capabilities.js'
@@ -84,7 +85,20 @@ export interface WeixinChannel {
   qq?: import('./channels/qq/settings.js').QqSettings
   qqActivity?: import('./channels/qq/actions.js').QqActionReceipt[]
   platform?: 'weixin' | 'matrix' | 'mattermost' | 'qq'
-  direct?: { baseUrl: string; targetId: string; peerId: string; cursor?: string }
+  direct?: {
+    baseUrl: string
+    targetId: string
+    peerId: string
+    cursor?: string
+    /** Mattermost 明确加入的频道白名单，不继承私聊授权。 */
+    allowedChannelIds?: string[]
+    /** 添加渠道时验证过的频道目录，供配置界面显示名称。 */
+    mattermostChannels?: Array<{ id: string; name: string; displayName: string; type: 'O' | 'P' }>
+    /** Mattermost Thread 引用历史轮数；旧配置缺失时按 3 轮兼容。 */
+    threadHistoryRounds?: number
+    /** 用于兼容无法从帖子 mentions 元数据读取提及对象的服务器版本。 */
+    botUsername?: string
+  }
   id: string
   companionId: string
   accountId: string
@@ -95,6 +109,9 @@ export interface WeixinChannel {
 }
 
 export interface PairingRequest {
+  /** Mattermost 频道授权与 DM 授权分离，撤销频道许可不影响 DM。 */
+  allowedChannelIds?: string[]
+  pendingChannelIds?: string[]
   directTargetId?: string
   pairingCode?: string
   lastInboundAt?: number
@@ -110,7 +127,18 @@ export interface PairingRequest {
 }
 
 export interface ChannelSession {
-  /** QQ contexts can be separate while using companion-wide long-term memory. */
+  /** Durable Inbox 来源键；有此字段的渠道消息使用独立且可恢复的 DSH Session。 */
+  inboxConversationKey?: string
+  inboxPlatform?: 'weixin' | 'mattermost'
+  inboxAccountId?: string
+  inboxConversationType?: 'dm' | 'channel' | 'thread'
+  inboxConversationId?: string
+  inboxChannelId?: string
+  inboxIsChannelConversation?: boolean
+  inboxThreadRootId?: string
+  /** 线程共享路由中的最近授权发言人，实际每条消息仍保留独立来源记录。 */
+  lastActorId?: string
+  /** Explicit long-term memory scope, independent from the DSH Session transcript. */
   memoryScopeId?: string
   qqSessionTarget?: string
   qqSessionMode?: 'main' | 'separate'
@@ -133,6 +161,10 @@ export interface ChannelSession {
   lastMessageAt: number
   /** Stable user-message identities received on this route; never inferred from text. */
   inboundMessageIds?: string[]
+  /** Mattermost 单个 DSH 会话中由用户明确要求“记住”的约束。 */
+  mattermostSessionConstraints?: string[]
+  /** Mattermost 当前会话最近三个实质任务，仅用于连续话题理解。 */
+  mattermostTaskChain?: string[]
 }
 
 export interface PartnerState {
@@ -163,6 +195,8 @@ export interface PartnerState {
   companionAccessGrants: CompanionAccessGrant[]
   schedules: ScheduledPartnerTask[]
   executionRuns: ExecutionRun[]
+  /** Codex 子 Agent 的持久运行账本；旧状态文件可不含此字段。 */
+  codeExecutionRuns?: CodeExecutionRun[]
 }
 
 export interface SkillMarketNetworkSettings {

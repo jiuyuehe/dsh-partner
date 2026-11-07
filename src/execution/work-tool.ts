@@ -7,7 +7,7 @@ import { channelReplyAllowed } from '../channels/reply-access.js'
 import { ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { PartnerStore } from '../store.js'
 import type { EphemeralExecutionService } from './service.js'
-import { resolveToolAccess } from './tool-access-adapter.js'
+import { resolveToolAccess, isToolAllowed } from './tool-access-adapter.js'
 import { isInternalTaskNotice } from '../channels/delivery-policy.js'
 import { isIdleContactNotice } from '../character/idle-contact.js'
 import { workflowProtocol } from '../collaboration/workflow-protocols.js'
@@ -15,7 +15,7 @@ import { record, requiredText } from '../core/validation.js'
 
 // Work may act only through the original session. It cannot impersonate a fresh
 // local owner, create a second chat identity, or deliver an unsolicited reply.
-const excluded=new Set(['partner_work_execute','partner_work_tools','partner_work_result','partner_tools','run_code','partner_chat_reply','partner_agreement','partner_chat_say','partner_chat_progress','partner_qq_reply','partner_activity_finish','partner_sleep','partner_identity','partner_send_attachment'])
+const excluded=new Set(['partner_work_execute','partner_work_tools','partner_work_result','partner_code_execute','partner_code_status','partner_tools','run_code','partner_chat_reply','partner_agreement','partner_chat_say','partner_chat_progress','partner_qq_reply','partner_activity_finish','partner_sleep','partner_identity','partner_send_attachment'])
 const origin=(exec:ToolRunContext)=>[...(exec.agent?.session.snapshotEvents()??[])].reverse().find(e=>e.type==='user/message'&&(e.data.source.kind==='user'||isInternalTaskNotice(e)||isIdleContactNotice(e)))
 const listActions=new Set(['list','describe','load','reference','directory'])
 interface Receipt {callId:string;tool:string;action?:string;success:boolean;executed:boolean;catalogue:boolean}
@@ -35,7 +35,7 @@ function resultInput(raw:unknown):WorkResult {
 export function workExecutionTool(owner:string,store:PartnerStore,executor:EphemeralExecutionService,runtime:ToolRuntime,protocol?:(name:string,exec:ToolRunContext)=>string):ToolDefinition {
  return {
   name:'partner_work_execute',
-  description:'用户让你查证、排障、寻找实现方案或重新检查先前结论时，直接调用此工具开展实际调查，不先用能力目录代替调查。输入写本次目标、必要背景和待核实的旧说法；只讨论概念、闲聊、查询工具清单或一次轻量操作不调用。返回事实、证据、未知项和产物，由原人格会话答复。不会直接发送聊天，不创建另一份人格或睡眠状态。私聊先完成前置回应。轻量聊天工具可直接调用；已有看板任务或指定协作者沿用原任务。input 包含本次授权目标和必要资料，不复制无关历史。没有入口不代表不存在实现方案；调查任务需要实际查证。',
+   description:'用户要求非代码类查证、排障、寻找实现方案或重新检查先前结论时，直接调用此工具开展实际调查，不先用能力目录代替调查。任何读取/修改仓库或代码、编写/运行测试、构建、调试、代码审查必须改用 partner_code_execute；Codex 不可用或失败时明确报告，禁止回退到本 DSH 工作 Agent。input 写本次目标、必要背景和待核实说法；只讨论概念、闲聊、查询工具清单或一次轻量操作不调用。返回事实、证据、未知项和产物，由原人格会话答复。不会直接发送聊天，不创建另一份人格或睡眠状态。私聊先完成前置回应。已有看板任务或指定协作者沿用原任务。input 包含本次授权目标和必要资料，不复制无关历史。没有入口不代表不存在实现方案；调查任务需要实际查证。',
   parameters:{type:'object',additionalProperties:false,properties:{input:{type:'string',minLength:1,maxLength:16000}},required:['input']},
   timeoutMs:16*60_000,
   output:{schema:{type:'string'},render:(_args,value)=>[{type:'text',text:String(value)}]},
@@ -60,7 +60,8 @@ export function workExecutionTool(owner:string,store:PartnerStore,executor:Ephem
    const available=()=>{
     guard()
     const access=resolveToolAccess({agent,state:store.snapshot()})
-    return runtime.schemas(agent).filter(t=>!excluded.has(t.name)&&(!access.allowedTools||access.allowedTools.includes(t.name)))
+    // 子任务只能桥接原会话当前可见的工具，不能绕过渠道对页面交互工具的限制。
+    return runtime.schemas(agent).filter(t=>!excluded.has(t.name)&&isToolAllowed(access,t.name))
    }
    const companion=guard(),receipts:Receipt[]=[]
    let final:WorkResult|undefined

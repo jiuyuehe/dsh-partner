@@ -13,6 +13,7 @@ import { BUILTIN_SKILLS } from '../lib/skills/builtin.js'
 import { TASK_PLANNING_DOCUMENT, TASK_PLANNING_VERSION } from '../lib/skills/task-planning.js'
 import { parseSkillDocument } from '../lib/skills/loader.js'
 import { SessionConfigurationIndex } from '../lib/companions/session-configuration.js'
+import { isPartnerDiscoveryTool, PARTNER_TOOL_ENTRIES } from '../lib/collaboration/tool-discovery.js'
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'partner-dispatch-'))
@@ -110,14 +111,83 @@ test('tool guidance connects requests, specialists and the planning Skill withou
     },
     systemPrompt: { section(value) { sections.push(value); return () => {} } },
   }, store.snapshot().companions[0])
-  assert.deepEqual([...tools.keys()].sort(), ['partner_activity_finish', 'partner_affection', 'partner_collaborate', 'partner_identity', 'partner_requirements', 'partner_skill', 'partner_task_board', 'partner_thoughts', 'partner_work_execute', 'partner_workflow'])
-  for (const name of [...tools.keys()].filter(name => !['partner_thoughts', 'partner_affection', 'partner_identity', 'partner_activity_finish', 'partner_work_execute', 'partner_workflow'].includes(name))) assert.match(tools.get(name).description, /enabled task-planning Skill/)
+  assert.deepEqual([...tools.keys()].sort(), ['partner_activity_finish', 'partner_affection', 'partner_code_execute', 'partner_code_status', 'partner_collaborate', 'partner_identity', 'partner_requirements', 'partner_skill', 'partner_task_board', 'partner_thoughts', 'partner_work_execute', 'partner_workflow'])
+  for (const name of [...tools.keys()].filter(name => !['partner_thoughts', 'partner_affection', 'partner_identity', 'partner_activity_finish', 'partner_code_execute', 'partner_code_status', 'partner_work_execute', 'partner_workflow'].includes(name))) assert.match(tools.get(name).description, /enabled task-planning Skill/)
+  assert.match(tools.get('partner_code_execute').description, /用户明确要求 Codex CLI\/Codex 子 Agent.*也使用本工具/)
+  assert.match(sections.map(section => section.text).join('\n'), /失败时明确报告并停止/)
+  assert.match(sections.map(section => section.text).join('\n'), /直接调用顶层 partner_code_execute/)
+  assert.doesNotMatch(sections.map(section => section.text).join('\n'), /当前伙伴作用域中的 subagent_codex 是插件提供/)
+  assert.match(sections.map(section => section.text).join('\n'), /用户明确要求 Codex CLI\/Codex 子 Agent 完成的其他任务.*包括写作、分析等/s)
   assert.match(tools.get('partner_task_board').description, /no explicit @ or board request/)
   assert.match(tools.get('partner_collaborate').description, /do not duplicate already-assigned work/)
   assert.equal(sections.some(section => section.name.includes('preflight')), false)
   assert.equal(parseSkillDocument(TASK_PLANNING_DOCUMENT).metadata.has('phase'), false)
   dispose()
   assert.equal(tools.size, 0)
+})
+
+test('unified tool discovery routes Codex work through the plugin gateway, without shadowing the host tool', async t => {
+  const { store, board, skills, service } = await fixture(t)
+  const sessionId = 'codex-discovery-routing'
+  await store.update(state => {
+    state.companions[0].toolDiscovery = true
+    state.sessions.push({ id: 'codex-discovery-route', kind: 'local', companionId: 'companion-default', sessionId, channelId: '@local', userId: 'owner' })
+  })
+  const companion = store.snapshot().companions[0]
+  const registered = new Map(), sections = [], routed = [], sessionEvents = []
+  const globalCodexTool = {
+    name: 'subagent_codex', description: '原始全局后台 Codex 工具',
+    parameters: { type: 'object', properties: { description: { type: 'string' }, prompt: { type: 'string' }, cwd: { type: 'string' } }, required: ['prompt'] },
+    output: { schema: { type: 'object' }, render: () => [] },
+    async execute() { assert.fail('伙伴 Codex 委派不得调用 DSH 宿主后台工具') },
+  }
+  const runtime = {
+    register(tool) { registered.set(tool.name, tool); return () => registered.delete(tool.name) },
+    get(name, scope) { return registered.get(name) ?? (scope === undefined && name === 'subagent_codex' ? globalCodexTool : undefined) },
+    async execute(request) {
+      const tool = registered.get(request.name)
+      if (!tool) throw new Error(`unknown tool ${request.name}`)
+      const value = await tool.execute(request.arguments, { agent: request.agent, signal: request.signal, callId: request.callId, rootCallId: request.rootCallId })
+      return { content: [{ type: 'text', text: JSON.stringify(value) }], isError: false }
+    },
+  }
+  const agent = { session: { id: sessionId, snapshotEvents: () => [], append(type, data) { sessionEvents.push({ type, data }) } }, ctx: { tools: runtime } }
+  const composer = new PartnerAgentComposition(store, skills, board, service, {}, {}, {})
+  composer.setCodeExecutionToolFactory(() => [{
+    name: 'partner_code_execute', description: 'Codex 执行器', parameters: { type: 'object', properties: { task: { type: 'string' } }, required: ['task'] },
+    output: { schema: { type: 'object' }, render: () => [] }, timeoutMs: 10_000,
+    async execute(args) { routed.push(args); return { provider: 'codex', status: 'completed', result: '夏日诗作已返回' } },
+  }, {
+    name: 'partner_code_status', description: 'Codex 状态', parameters: { type: 'object', properties: {} },
+    output: { schema: { type: 'object' }, render: () => [] }, async execute() { return { runs: [] } },
+  }])
+  const dispose = await composer.compose({ tools: runtime, systemPrompt: { section(value) { sections.push(value); return () => {} } } }, companion)
+  t.after(dispose)
+
+  // 统一入口模式只向模型公开 partner_tools；宿主工具保留宿主自己的顶层入口。
+  assert.equal(registered.has('partner_code_execute'), true, 'internal code tool remains registered for gateway execution')
+  assert.equal(registered.has('partner_tools'), true)
+  assert.equal(registered.has('subagent_codex'), false, 'the plugin never registers a colliding host tool name')
+  assert.equal(runtime.get('subagent_codex'), globalCodexTool, 'the host tool remains intact in the global view')
+  const visibleTopLevel = [...registered.values()].filter(tool => PARTNER_TOOL_ENTRIES.includes(tool.name) || !isPartnerDiscoveryTool(store, companion.id, tool.name))
+  assert.equal(visibleTopLevel.some(tool => tool.name === 'partner_code_execute'), false, 'internal code tool is removed from the model-facing top-level list')
+  assert.equal(visibleTopLevel.some(tool => tool.name === 'subagent_codex'), false, 'the host tool is not added to the partner plugin top-level list')
+  const listed = await registered.get('partner_tools').execute({ action: 'list', category: 'work', query: 'partner_code_execute' }, {
+    agent, signal: new AbortController().signal, callId: 'list-code-tool',
+  })
+  assert.ok(listed.tools.some(tool => tool.name === 'partner_code_execute'))
+  const task = { task: '请用 Codex 写一首夏日诗。', acceptanceCriteria: ['由 Codex 返回最终诗作'] }
+  const dispatched = await registered.get('partner_tools').execute({
+    action: 'call', name: 'partner_code_execute', argumentsJson: JSON.stringify(task),
+  }, { agent, signal: new AbortController().signal, callId: 'invoke-code-tool', rootCallId: 'invoke-code-tool', token: {}, deferContext() {}, concludeTurn() {} })
+  assert.deepEqual(routed, [task], 'the partner gateway passes the structured arguments to its own Codex provider tool')
+  assert.equal(dispatched.dispatch.isError, false)
+  assert.match(dispatched.dispatch.content[0].text, /夏日诗作已返回/)
+  assert.ok(sessionEvents.some(event => event.type === 'tool/ptc-dispatch-start' && event.data.name === 'partner_code_execute'))
+  const prompt = sections.map(section => section.text).join('\n')
+  assert.match(prompt, /统一工具入口：通过顶层 partner_tools 直接执行 action=call，name=partner_code_execute/)
+  assert.match(prompt, /不要调用 DSH 宿主的 subagent_codex、job_output 或 job_list/)
+  assert.match(prompt, /需要查询运行记录时也通过 partner_tools action=call 调用 partner_code_status/)
 })
 
 test('one authorized specialist deliverable dispatches without artificial decomposition and hides disabled capabilities', async t => {

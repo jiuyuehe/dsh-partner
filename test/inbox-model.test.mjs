@@ -52,18 +52,22 @@ function makeRoute(key, overrides = {}) {
 }
 
 test('InboundEnvelope serializes and restores platform, thread, attachment and routing metadata', () => {
-  const envelope = makeEnvelope({ replyContextToken: 'private-routing-context', rawEventVersion: 'edit-2' })
+  const envelope = makeEnvelope({ replyContextToken: 'private-routing-context', rawEventVersion: 'edit-2', isChannelConversation: true,
+    mattermostContext: [{ postId: 'history-post', actorId: 'user-b', actorName: 'B User', text: '之前的线程上下文', timestamp: 1_700_000_000_050, isBot: false }] })
   const restored = deserializeInboundEnvelope(serializeInboundEnvelope(envelope))
   assert.deepEqual(restored, envelope)
   assert.equal(restored.threadRootId, 'root-a')
   assert.equal(restored.attachments[0].externalAttachmentId, 'file-1')
   assert.equal(restored.replyContextToken, 'private-routing-context')
+  assert.equal(restored.isChannelConversation, true)
+  assert.equal(restored.mattermostContext[0].text, '之前的线程上下文')
 })
 
 test('InboundEnvelope decoder rejects inconsistent source keys and malformed fields', () => {
   assert.throws(() => deserializeInboundEnvelope(JSON.stringify(makeEnvelope({ conversationKey: asConversationKey('wrong') }))), /conversationKey/)
   assert.throws(() => deserializeInboundEnvelope(JSON.stringify(makeEnvelope({ mentions: 'bot' }))), /mentions/)
   assert.throws(() => deserializeInboundEnvelope(JSON.stringify(makeEnvelope({ threadRootId: undefined }))), /threadRootId/)
+  assert.throws(() => deserializeInboundEnvelope(JSON.stringify(makeEnvelope({ mattermostContext: [{ postId: 'bad', actorId: 'actor', text: 'x'.repeat(8_001), timestamp: 1, isBot: false }] }))), /mattermostContext/)
 })
 
 test('ConversationKey is stable, uses source IDs, separates account/config and thread root', () => {

@@ -9,6 +9,8 @@ export interface PartnerInboundAttachment {
 
 export interface PartnerInboundMessage {
   sessionTitle?: string
+  /** 渠道来源路由元数据；不属于用户正文，Agent 运行时不得将其写入提示词。 */
+  inboxConversation?: import('./inbox/session-router.js').InboxSessionIdentity
   text: string
   attachments: PartnerInboundAttachment[]
 }
@@ -30,7 +32,18 @@ export interface PartnerReply {
   chatParts?: import('./chat/protocol.js').ChatPart[]
   chatOriginRouteId?: string | null
   /** Freeze the direct source; never reroute a queued reply after account or room changes. */
-  directSource?: { routeId: string; sessionId: string; accountId: string; baseUrl: string; targetId: string }
+  directSource?: {
+    routeId: string
+    sessionId: string
+    accountId: string
+    baseUrl: string
+    targetId: string
+    /** Mattermost 线程回复的可信来源；不能由模型提供。 */
+    conversationType?: 'dm' | 'thread'
+    threadRootId?: string
+    actorId?: string
+    isChannelConversation?: boolean
+  }
 
   /** Status-only delivery must suppress even previously queued attachment parts. */
   attachmentPolicy?: 'text-only'

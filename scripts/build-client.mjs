@@ -1,6 +1,8 @@
 import { build } from 'esbuild'
+import { readFile } from 'node:fs/promises'
 
 const pluginId = '@lemoncat7/dsh-partner'
+const { version: pluginVersion } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
 
 // Keep Markdown parsing self-contained when deploying into a host-managed profile.
 await build({ entryPoints: ['src/channels/direct/message-format.ts'], outfile: 'lib/channels/direct/message-format.js', bundle: true, format: 'esm', platform: 'node', target: 'es2022', sourcemap: true })
@@ -26,6 +28,8 @@ await build({
   target: 'es2022',
   jsx: 'automatic',
   sourcemap: true,
+  // 客户端标题的版本由包清单注入，保证页面标识与实际发布包一致。
+  define: { __DSH_PARTNER_VERSION__: JSON.stringify(pluginVersion) },
   external: [
     'react',
     'react/jsx-runtime',

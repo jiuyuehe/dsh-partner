@@ -297,6 +297,17 @@ function validateState(value: unknown): asserts value is PartnerState {
   }
   if (typeof state.skillMarketNetwork !== 'object' || state.skillMarketNetwork === null || Array.isArray(state.skillMarketNetwork)) throw new Error('partner state skillMarketNetwork must be an object')
   if (state.skillMarketNetwork.proxyUrl !== undefined && typeof state.skillMarketNetwork.proxyUrl !== 'string') throw new Error('partner state skillMarketNetwork.proxyUrl must be a string')
+  for (const route of state.sessions!) {
+    if (route.mattermostSessionConstraints !== undefined && (!Array.isArray(route.mattermostSessionConstraints) || route.mattermostSessionConstraints.length > 12 || route.mattermostSessionConstraints.some(value => typeof value !== 'string' || value.length > 500))) throw new Error('invalid Mattermost session constraints')
+    if (route.mattermostTaskChain !== undefined && (!Array.isArray(route.mattermostTaskChain) || route.mattermostTaskChain.length > 3 || route.mattermostTaskChain.some(value => typeof value !== 'string' || value.length > 500))) throw new Error('invalid Mattermost task chain')
+  }
+  if (state.codeExecutionRuns !== undefined) {
+    const statuses = new Set(['starting', 'running', 'completed', 'provider_missing', 'auth_failed', 'startup_failed', 'process_failed', 'timeout', 'canceled', 'permission_denied', 'invalid_result', 'cleanup_failed', 'interrupted'])
+    if (!Array.isArray(state.codeExecutionRuns) || state.codeExecutionRuns.length > 100) throw new Error('partner codeExecutionRuns must be a bounded array')
+    for (const run of state.codeExecutionRuns) {
+      if (!run || typeof run.runId !== 'string' || !run.runId || run.provider !== 'codex' || typeof run.companionId !== 'string' || typeof run.parentSessionId !== 'string' || typeof run.workspace !== 'string' || run.workspace.length > 4096 || typeof run.task !== 'string' || run.task.length > 800 || !statuses.has(run.status) || !Number.isFinite(run.startedAt) || !Number.isFinite(run.updatedAt) || run.subagentId !== undefined && typeof run.subagentId !== 'string' || run.finishedAt !== undefined && !Number.isFinite(run.finishedAt) || run.stopReason !== undefined && (typeof run.stopReason !== 'string' || run.stopReason.length > 100) || run.diagnostic !== undefined && (typeof run.diagnostic !== 'string' || run.diagnostic.length > 1000) || run.outputPreview !== undefined && (typeof run.outputPreview !== 'string' || run.outputPreview.length > 8000)) throw new Error('invalid partner Code Run Ledger entry')
+    }
+  }
   const companionIds = new Set(state.companions!.map(companion => companion.id))
   validateMcpState(state)
   validatePushState(state)

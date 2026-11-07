@@ -16,7 +16,7 @@ P2-01 至 P2-07 的自动化验收通过。真实 Profile 启动后发现两个�
 
 | 区域 | 改动 |
 | --- | --- |
-| `src/inbox/provider.ts`、`src/inbox/durable-inbox.ts` | SQLite Provider 与 Inbox facade；开启 WAL、外键、busy timeout，启动时应用 schema v1，限制数据库文件权限，并提供幂等关闭。 |
+| `src/inbox/provider.ts`、`src/inbox/durable-inbox.ts` | SQLite Provider 与 Inbox facade；开启 WAL、外键、busy timeout，P2 初始 schema 为 v1，后续 P3 增加确认账本迁移至 v2；限制数据库文件权限并提供幂等关闭。 |
 | `src/inbox/cursor-repository.ts`、`src/inbox/repository.ts` | 游标与事件/batch Repository；单事务写入一页事件、唯一去重、初始批次及游标；提供原子 claim、lease、settle、retry 和 dead-letter 查询。错误文本会遮蔽 Bearer 与凭据型键值。 |
 | `src/inbox/channel-events.ts`、`src/inbox/mattermost-cursor.ts` | 微信与 Mattermost 消息规范化、授权过滤、附件元数据整理，以及 Mattermost 60 秒重叠续读游标；Mattermost 自动发现模式使用已验证入站消息所带的 DM ID。 |
 | `src/channels/weixin/poll.ts`、`src/channels/manager.ts` | 微信只有在 Inbox 页面和 `get_updates_buf` 原子提交后才推进进程内 buffer；Mattermost 只有在 REST 页面成功入库后才推进高水位游标。新未批准联系人会生成待审批配对；近期旧版 filtered 事件会在启动时恢复待审批记录。满页响应会拒绝入库并保留旧游标，避免静默跳过积压帖子。两种渠道仍不启动 Agent。 |
@@ -30,7 +30,7 @@ P2-01 至 P2-07 的自动化验收通过。真实 Profile 启动后发现两个�
 
 | 项目 | 状态 | 证据 |
 | --- | --- | --- |
-| P2-01 SQLite Provider | PASS | WAL、`user_version=1`、重开同一数据库；两个独立 worker thread 同时争抢同一批次，只能一个取得租约。 |
+| P2-01 SQLite Provider | PASS | WAL、重开同一数据库；当前 schema `user_version=2`（v1 Inbox + v2 确认账本）；两个独立 worker thread 同时争抢同一批次，只能一个取得租约。 |
 | P2-02 Inbox Repository | PASS | 同一 event 连续提交 10 次只有 1 条记录和 1 个初始 batch；领取、settle 状态更新正确。 |
 | P2-03 Cursor Repository | PASS | 页面包含非法 event 时事件与游标都回滚；Mattermost 高水位回退被拒绝；满页轮询异常时已提交游标不变。 |
 | P2-04 Lease 恢复 | PASS | 两个 worker 不会同时拥有同一有效租约；过期租约可被新 worker 回收，旧 worker 的 settle 被拒绝。 |
@@ -60,3 +60,24 @@ P2-01 至 P2-07 的自动化验收通过。真实 Profile 启动后发现两个�
 - Mattermost 使用 60 秒回溯与 200 帖单页上限。超过单页上限时保持游标并持续重试，需要外部积压消退或后续分页实现才能恢复。
 - WeChat buffer 和 Mattermost 水位原子性针对本地 Inbox 数据库；平台服务端是否按预期重放消息仍需后续真实账号验收。
 - Phase 3 开始前应在本分支复核本报告及 Plane 记录；Phase 3 需实现 Coalescer/Dispatcher 并为入队事件设置可恢复的消费策略。
+
+## 2026-11-05 阶段关闭记录
+
+按用户最新要求，P2 的数据库、去重、游标、租约、微信 buffer、Mattermost overlap 和 dead-letter 验收以代码级回归为准；真实 DSH 浏览器与 Mattermost 交互留到 P3/P4 接入 Agent 后人工验证，不再阻塞 P2 exit gate。
+
+- 状态：**PASS**（P2 技术验收）。
+- 本轮命令：`npm run build`；`node --test test/channel-diagnostics.test.mjs test/durable-inbox.test.mjs test/weixin-reconnect.test.mjs test/direct-channels.test.mjs`。
+- 结果：构建通过；44 项通过，0 失败。
+- 保留风险：已批准事件在 P2 仅进入 SQLite，尚未进入 DSH Agent；最终浏览器/真实渠道验收仍需在 P3/P4 完成后执行。
+- 下一门槛：完成 Phase 3 消息合并与 Dispatcher 自动化，再进入 Phase 4 微信联系人 Session 隔离与旧功能回归。
+
+## 2026-11-05 Phase 3/4 接线复核
+
+P3、P4 的实现和专项自动化证据分别记录在 `phase-3-coalescing.md` 与 `phase-4-wechat-session-routing.md`。本节更正阶段接续关系：当前工作树已接入 Dispatcher 和 Agent，不再是“消费者尚未实现”的状态；真实 DSH Profile 和真实微信账号的人工验收仍需用户在本机继续完成。
+
+## 2026-11-05 按 Plane P2 清单复验
+
+- 命令：`node --test test/channel-diagnostics.test.mjs test/durable-inbox.test.mjs test/weixin-reconnect.test.mjs test/direct-channels.test.mjs`
+- 结果：**56/56 通过**，覆盖 WAL/migration、重复 event、游标事务、并发 claim/lease 恢复、微信 buffer 重启、Mattermost overlap 与 dead letter。
+- 阶段边界：P2 只把获准消息写入 SQLite，不调用 DSH Agent；消息进入 DSH 的 `followup()` 属于 P3 Dispatcher。此项已由 P3 的 `starting a WeChat channel dispatches...` 集成测试验证。
+- 真实渠道 UI 验收：按照用户要求留到 P3/P4 完成后，由用户在同一个 `dsh-partner-dev` Profile 手动测试。

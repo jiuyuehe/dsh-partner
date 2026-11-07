@@ -4,6 +4,7 @@ import { InboxSqliteProvider } from './provider.js'
 
 type CursorRow = {
   channel_config_id: string
+  scope_id: string
   platform: string
   cursor_type: string
   cursor_json: string
@@ -40,6 +41,7 @@ export function cursorFromRow(row: CursorRow | undefined): ChannelCursor | undef
   }
   return {
     channelConfigId: row.channel_config_id,
+    ...(row.scope_id ? { scopeId: row.scope_id } : {}),
     platform,
     cursorType,
     cursorJson: row.cursor_json,
@@ -52,10 +54,10 @@ export function cursorFromRow(row: CursorRow | undefined): ChannelCursor | undef
 export class CursorRepository {
   constructor(private readonly provider: InboxSqliteProvider) {}
 
-  get(channelConfigId: string): ChannelCursor | undefined {
+  get(channelConfigId: string, scopeId = ''): ChannelCursor | undefined {
     return this.provider.read(database => cursorFromRow(database.prepare(
-      'SELECT channel_config_id, platform, cursor_type, cursor_json, high_watermark, updated_at FROM channel_cursors WHERE channel_config_id = ?',
-    ).get(channelConfigId) as CursorRow | undefined))
+      'SELECT channel_config_id, scope_id, platform, cursor_type, cursor_json, high_watermark, updated_at FROM channel_cursors WHERE channel_config_id = ? AND scope_id = ?',
+    ).get(channelConfigId, scopeId) as CursorRow | undefined))
   }
 
   commit(cursor: ChannelCursor): void {
@@ -64,19 +66,21 @@ export class CursorRepository {
 
   static writeInTransaction(database: DatabaseSync, cursor: ChannelCursor): void {
     validateCursor(cursor)
+    const scopeId = cursor.scopeId ?? ''
+    if (scopeId.length > 512 || scopeId !== scopeId.trim()) throw new Error('cursor scopeId is invalid')
     const previous = cursorFromRow(database.prepare(
-      'SELECT channel_config_id, platform, cursor_type, cursor_json, high_watermark, updated_at FROM channel_cursors WHERE channel_config_id = ?',
-    ).get(cursor.channelConfigId) as CursorRow | undefined)
+      'SELECT channel_config_id, scope_id, platform, cursor_type, cursor_json, high_watermark, updated_at FROM channel_cursors WHERE channel_config_id = ? AND scope_id = ?',
+    ).get(cursor.channelConfigId, scopeId) as CursorRow | undefined)
     if (previous && (previous.platform !== cursor.platform || previous.cursorType !== cursor.cursorType)) {
       throw new Error('cursor platform or type changed for an existing channel')
     }
     if (previous?.highWatermark !== undefined && cursor.highWatermark !== undefined && cursor.highWatermark < previous.highWatermark) {
       throw new Error('cursor highWatermark cannot move backwards')
     }
-    database.prepare(`INSERT INTO channel_cursors (channel_config_id, platform, cursor_type, cursor_json, high_watermark, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(channel_config_id) DO UPDATE SET platform=excluded.platform, cursor_type=excluded.cursor_type,
+    database.prepare(`INSERT INTO channel_cursors (channel_config_id, scope_id, platform, cursor_type, cursor_json, high_watermark, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(channel_config_id, scope_id) DO UPDATE SET platform=excluded.platform, cursor_type=excluded.cursor_type,
         cursor_json=excluded.cursor_json, high_watermark=excluded.high_watermark, updated_at=excluded.updated_at`)
-      .run(cursor.channelConfigId, cursor.platform, cursor.cursorType, cursor.cursorJson, cursor.highWatermark ?? null, cursor.updatedAt)
+      .run(cursor.channelConfigId, scopeId, cursor.platform, cursor.cursorType, cursor.cursorJson, cursor.highWatermark ?? null, cursor.updatedAt)
   }
 }

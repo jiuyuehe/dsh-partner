@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { createCipheriv, randomBytes } from 'node:crypto'
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { receiveWeixinMedia } from '../lib/channels/weixin/media.js'
 import { ChannelManager, answerQuestions, busyEnterMode, extractText, isAutonomousDeliveryTurn, renderQuestions } from '../lib/channels/manager.js'
 import { extractOutboundAttachments, selectTaskNotificationRoute } from '../lib/agent-runtime.js'
@@ -18,11 +18,11 @@ import { RequirementWorker } from '../lib/requirements/worker.js'
 import { assistantTextAfter } from '../lib/execution/agent-support.js'
 import { AttachmentDeliveryService } from '../lib/attachments/service.js'
 
-async function configureRequirementDelivery(t, channels, root) {
+async function configureRequirementDelivery(channels, root) {
   const service = await AttachmentDeliveryService.open(join(root, 'attachments'))
-  t.after(() => service.close())
   channels.setRequirementDelivery(service, '/partner-api')
   channels.agents.recordRequirementResult = async () => {}
+  return service
 }
 
 function encrypt(value, key) {
@@ -169,10 +169,14 @@ test('missing, malformed and escaping sandbox references fail visibly without gu
   const base = await mkdtemp(join(tmpdir(), 'partner-sandbox-boundary-'))
   t.after(() => rm(base, { recursive: true, force: true }))
   const root = join(base, 'workspace')
+  const privateDirectory = join(base, 'private')
   await mkdir(root)
-  await writeFile(join(base, 'secret.png'), 'private')
-  await symlink(join(base, 'secret.png'), join(root, 'escape.png'))
-  for (const reference of ['sandbox:../secret.png', 'sandbox:escape.png', 'sandbox:/mnt/data/missing.png', 'sandbox:%E0%A4%A.png', 'sandbox://outside/secret.png']) {
+  await mkdir(privateDirectory)
+  await mkdir(join(privateDirectory, 'nested'))
+  await writeFile(join(privateDirectory, 'nested', 'secret.png'), 'private')
+  // Windows Junction 不要求创建文件符号链接的开发者模式或管理员权限。
+  await symlink(privateDirectory, join(root, 'escape'), 'junction')
+  for (const reference of ['sandbox:../secret.png', 'sandbox:escape/nested/secret.png', 'sandbox:/mnt/data/missing.png', 'sandbox:%E0%A4%A.png', 'sandbox://outside/secret.png']) {
     const reply = await prepareChannelReply({ text: `结果说明 [图片](${reference})`, referenceTexts: [] }, root)
     assert.deepEqual(reply.attachments, [])
     assert.match(reply.text, /结果说明/)
@@ -201,14 +205,15 @@ test('renders short terminal results directly without internal review handoff', 
 
 test('child acceptance stays silent and requirement summary sends one terminal result to the creator channel', async t => {
   const root = await mkdtemp(join(tmpdir(), 'partner-channel-terminal-'))
-  t.after(() => rm(root, { recursive: true, force: true }))
   const store = await PartnerStore.open(join(root, 'state.json'))
   const board = new TaskBoardService(store)
   const actor = { kind: 'companion', companionId: 'companion-default' }
   await store.update(s => s.sessions.push({ id: 'route', kind: 'channel', companionId: actor.companionId,
     sessionId: 'creator-session', channelId: 'channel', userId: 'user', cwd: root, lastMessageAt: 1 }))
   const channels = new ChannelManager({}, store, {}, {}, root)
-  await configureRequirementDelivery(t, channels, root)
+  const services = [await configureRequirementDelivery(channels, root)]
+  // Windows 锁定 SQLite 文件；先排空写入、关闭连接，再删除临时目录。
+  t.after(async () => { await Promise.all(services.map(service => service.freeze())); await rm(root, { recursive: true, force: true }) })
   const delivered = []
   // Mock only transport; keep routing, rendering, queue and persistent receipts real.
   channels.sendProactiveReply = async (channelId, userId, reply) => delivered.push({ channelId, userId, reply })
@@ -232,21 +237,22 @@ test('child acceptance stays silent and requirement summary sends one terminal r
   assert.doesNotMatch(delivered[0].reply.text, /内部核验点/)
   const restored = await PartnerStore.open(join(root, 'state.json'))
   const afterRestart = new ChannelManager({}, restored, {}, {}, root)
-  await configureRequirementDelivery(t, afterRestart, root)
+  services.push(await configureRequirementDelivery(afterRestart, root))
   afterRestart.sendProactiveReply = async () => assert.fail('must not redeliver after restart')
   await afterRestart.notifyRequirementResult(finished)
 })
 
 test('stage reports route once before archiving; waiting/review suppresses delivery and changed results notify again', async t => {
   const root = await mkdtemp(join(tmpdir(), 'partner-channel-stage-'))
-  t.after(() => rm(root, { recursive: true, force: true }))
   const store = await PartnerStore.open(join(root, 'state.json')), board = new TaskBoardService(store), requirements = new RequirementService(store)
   const actor = { kind: 'companion', companionId: 'companion-default' }
   await store.update(s => s.sessions.push({ id: 'route', kind: 'channel', companionId: actor.companionId, sessionId: 'creator-session', channelId: 'channel', userId: 'user', cwd: root, lastMessageAt: 1 }))
   const req = await requirements.create({ title: '阶段交付' }, actor, 'creator-session')
   const task = await board.create({ title: '原型', requirementId: req.id }, actor)
   const channels = new ChannelManager({}, store, {}, {}, root), delivered = []
-  await configureRequirementDelivery(t, channels, root)
+  const services = [await configureRequirementDelivery(channels, root)]
+  // 先关闭 SQLite，再清理临时数据，避免 Windows 上的文件占用竞态。
+  t.after(async () => { await Promise.all(services.map(service => service.freeze())); await rm(root, { recursive: true, force: true }) })
   channels.sendProactiveReply = async (_c, _u, reply) => delivered.push(reply)
   const worker = new RequirementWorker(store, requirements, { summarize: async () => '当前成果和阻塞说明', deliver: item => channels.notifyRequirementResult(item), warn() {} })
   const stateTo = async status => store.update(s => {
@@ -264,7 +270,7 @@ test('stage reports route once before archiving; waiting/review suppresses deliv
   await stateTo('done'); await worker.tick(); await worker.tick(); await worker.close()
   assert.equal(delivered.length, 2)
   const restored = await PartnerStore.open(join(root, 'state.json')), resumed = new ChannelManager({}, restored, {}, {}, root)
-  await configureRequirementDelivery(t, resumed, root)
+  services.push(await configureRequirementDelivery(resumed, root))
   resumed.sendProactiveReply = async () => assert.fail('stage receipt survives restart')
   await resumed.notifyRequirementResult(requirements.require(req.id))
 })
@@ -291,7 +297,7 @@ test('separates review handoff and writes long deliverables to a private Markdow
   assert.doesNotMatch(document, /内部核验清单/)
   const attachments = await extractOutboundAttachments(delivery.text, root)
   assert.deepEqual(attachments.map(item => ({ name: item.name, kind: item.kind, mediaType: item.mediaType })), [{
-    name: delivery.documentPath.split('/').at(-1), kind: 'file', mediaType: 'text/markdown',
+    name: basename(delivery.documentPath), kind: 'file', mediaType: 'text/markdown',
   }])
 })
 
@@ -386,18 +392,20 @@ test('extracts text and voice transcripts without media placeholder text', () =>
 test('only exposes supported real files inside the companion workspace', async () => {
   const base = await mkdtemp(join(tmpdir(), 'dsh-partner-media-'))
   const root = join(base, 'partner')
-  const outside = join(base, 'outside.pdf')
+  const outside = join(base, 'outside')
   try {
     await mkdir(root)
     const image = join(root, '结果图.png')
     const document = join(root, '报告.pdf')
     const unsupported = join(root, '程序.exe')
-    const escaped = join(root, 'escape.pdf')
+    const escaped = join(root, 'escape', 'escape.pdf')
+    await mkdir(outside)
     await writeFile(image, 'png')
     await writeFile(document, 'pdf')
     await writeFile(unsupported, 'exe')
-    await writeFile(outside, 'outside')
-    await symlink(outside, escaped)
+    await writeFile(join(outside, 'escape.pdf'), 'outside')
+    // Junction 仍会让 realpath 越出伙伴工作区，验证附件路径边界判断。
+    await symlink(outside, join(root, 'escape'), 'junction')
     const result = await extractOutboundAttachments([
       `[图片](${image})`,
       `[报告](<${document}>)`,

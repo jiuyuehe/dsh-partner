@@ -25,7 +25,9 @@ function localPath(value: string): string | undefined {
   try {
     if (/^file:/i.test(value)) return fileURLToPath(value)
     const path = decodeURIComponent(value.replace(/^sandbox:/i, ''))
-    if (!path || path.includes('\0') || /^[a-z][a-z0-9+.-]*:/i.test(path) || path.startsWith('//')) return undefined
+    // Windows 盘符后的冒号不是 URL 协议；保留 DSH 在 Windows 工作区生成的绝对附件路径。
+    const windowsDrivePath = /^[a-z]:[\\/]/i.test(path)
+    if (!path || path.includes('\0') || (!windowsDrivePath && /^[a-z][a-z0-9+.-]*:/i.test(path)) || path.startsWith('//')) return undefined
     return path
   } catch { return undefined }
 }

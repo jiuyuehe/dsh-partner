@@ -38,7 +38,7 @@ async function fixture(t, composer, mode = 'native') {
   return { root, agent, store, runtime, assemble }
 }
 
-test('first restored role request projects stock identity and defers protocols once; disabling restores originals',async t=>{
+test('partner requests project stock coding identity even when optional role chat is disabled',async t=>{
  const f=await fixture(t)
  f.agent.session.snapshotEvents=()=>[]
  f.root.systemPrompt.section({name:'tool:write',order:20,text:'Read before writing.'})
@@ -53,7 +53,9 @@ test('first restored role request projects stock identity and defers protocols o
  assert.equal(discoveredToolProtocol(f.agent,'write'),'Read before writing.')
  await f.store.update(s=>{s.companions[0].characterCard.enabled=false;s.companions[0].toolDiscovery=false})
  const off=await f.assemble()
- assert.ok(off.sections.some(s=>s.name==='deployment:persona-prefix'))
+ assert.ok(!off.sections.some(s=>s.name==='deployment:persona-prefix'))
+ assert.ok(!off.sections.some(s=>s.name==='harness:identity'))
+ assert.ok(off.sections.some(s=>s.name==='partner-identity'))
  assert.ok(off.sections.some(s=>s.name==='ui:deliverable-file-references'))
  assert.equal(discoveredToolProtocol(f.agent,'write'),undefined)
 })
@@ -74,6 +76,47 @@ test('real provider snapshot before pre-step includes restored tools and identit
   await f.store.update(s => { s.companions[0].instructions = 'fresh identity' })
   assert.ok((await f.assemble()).sections.some(s => s.text.includes('fresh identity')))
   assert.equal(compositions, 2)
+})
+
+test('Mattermost turn guidance is hidden in DSH system prompt and preserves companion rules and native tools', async t => {
+  const f = await fixture(t, { async compose(ctx) {
+    return ctx.systemPrompt.tools(() => ({ schemas: [{ name: 'partner_schedule', parameters: { type: 'object' } }] }))
+  } })
+  await f.store.update(s => {
+    s.companions[0].instructions = '回答精准，不要啰嗦。'
+    const route = s.sessions[0]
+    route.kind = 'channel'
+    route.inboxPlatform = 'mattermost'
+    route.inboxConversationType = 'thread'
+    route.inboxConversationId = 'channel-mm'
+    route.inboxThreadRootId = 'thread-root'
+  })
+
+  const assembly = await f.assemble()
+  const policy = assembly.sections.find(section => section.name === 'partner-mattermost-input-policy')
+  const identity = assembly.sections.find(section => section.name === 'partner-identity')
+  assert.ok(policy, 'Mattermost message-interpretation policy belongs in the hidden DSH system prompt')
+  assert.match(policy.text, /本轮任务/)
+  assert.match(policy.text, /本轮最新 USER 消息/)
+  assert.match(policy.text, /唯一主要回应焦点/)
+  assert.match(policy.text, /SESSION_CONSTRAINTS/)
+  assert.match(policy.text, /TASK_CHAIN/)
+  assert.match(policy.text, /不能把 @机器人本身当任务/)
+  assert.match(policy.text, /插件回执、重复回执和渠道状态提示会在进入历史前过滤/)
+  assert.match(policy.text, /绝不跨频道或 Thread 混用/)
+  assert.match(policy.text, /BOT 回复可能重复、有误或过时/)
+  assert.match(policy.text, /直接使用 partner_chat_reply 的 messages/)
+  assert.doesNotMatch(policy.text, /标签只是 DSH 原生 USER 正文中的阅读提示/)
+  assert.match(policy.text, /活跃 Agent.*绕过等待并通过原生 steer 插入当前 Agent/)
+  assert.match(policy.text, /普通文字发送只在工具执行时按实时渠道授权校验/)
+  assert.match(policy.text, /旧 DSH 助手或工具结果只记录当时执行/)
+  assert.match(policy.text, /旧助手曾把普通文字回复错误地归因于角色聊天开关/)
+  assert.match(policy.text, /只有本轮 partner_chat_reply 实际返回失败时，才报告本轮工具失败/)
+  assert.doesNotMatch(policy.text, /当前角色聊天已停用|本轮未生成可发送的最终答复/)
+  assert.match(policy.text, /DSH 自身组装的系统提示与工具定义为准/)
+  assert.match(identity.text, /回答精准，不要啰嗦/)
+  assert.ok(assembly.tools.some(tool => tool.name === 'partner_schedule'), 'native DSH tool schema remains registered')
+  assert.doesNotMatch(policy.text, /partner_schedule/, 'system guidance does not fabricate a tool catalog')
 })
 
 test('composition error blocks assembly; retry installs once, without leaking partial sections', async t => {

@@ -5,7 +5,7 @@ import {
   asExternalMessageId,
   asConversationKey,
 } from './ids.js'
-import type { ChannelPlatform, ConversationType, InboundAttachment, InboundEnvelope } from './domain.js'
+import type { ChannelPlatform, ConversationType, InboundAttachment, InboundEnvelope, MattermostContextPost, WeixinMediaSource } from './domain.js'
 
 type RecordValue = Record<string, unknown>
 
@@ -30,6 +30,12 @@ function optionalString(record: RecordValue, field: string): string | undefined 
   return value
 }
 
+function optionalBoundedString(record: RecordValue, field: string, limit = 16_384): string | undefined {
+  const value = optionalString(record, field)
+  if (value !== undefined && value.length > limit) throw new Error(`${field} exceeds its size limit`)
+  return value
+}
+
 function requiredTimestamp(record: RecordValue, field: string): number {
   const value = record[field]
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
@@ -50,6 +56,49 @@ function readAttachment(value: unknown, index: number): InboundAttachment {
     fileName: requiredString(value, 'fileName'),
     ...(contentType === undefined ? {} : { contentType }),
     ...(sizeBytes === undefined ? {} : { sizeBytes }),
+  }
+}
+
+function readWeixinMediaSource(value: unknown, index: number): WeixinMediaSource {
+  if (!isRecord(value)) throw new Error(`weixinMediaSources[${index}] must be an object`)
+  const kind = value.kind
+  if (kind !== 'image' && kind !== 'file') throw new Error(`weixinMediaSources[${index}].kind is invalid`)
+  const encryptType = value.encryptType
+  if (encryptType !== undefined && (typeof encryptType !== 'number' || !Number.isSafeInteger(encryptType) || encryptType < 0)) {
+    throw new Error(`weixinMediaSources[${index}].encryptType is invalid`)
+  }
+  const fileName = optionalBoundedString(value, 'fileName', 255)
+  const contentType = optionalBoundedString(value, 'contentType', 255)
+  const imageAesKey = optionalBoundedString(value, 'imageAesKey', 256)
+  const fullUrl = optionalBoundedString(value, 'fullUrl')
+  const encryptQueryParam = optionalBoundedString(value, 'encryptQueryParam', 16_384)
+  const aesKey = optionalBoundedString(value, 'aesKey', 256)
+  return {
+    kind,
+    ...(fileName === undefined ? {} : { fileName }),
+    ...(contentType === undefined ? {} : { contentType }),
+    ...(imageAesKey === undefined ? {} : { imageAesKey }),
+    ...(fullUrl === undefined ? {} : { fullUrl }),
+    ...(encryptQueryParam === undefined ? {} : { encryptQueryParam }),
+    ...(aesKey === undefined ? {} : { aesKey }),
+    ...(encryptType === undefined ? {} : { encryptType }),
+  }
+}
+
+/** 只持久化经过限长的 Mattermost 线程纯文本，不保存帖子原始对象或附件 URL。 */
+function readMattermostContextPost(value: unknown, index: number): MattermostContextPost {
+  if (!isRecord(value)) throw new Error(`mattermostContext[${index}] must be an object`)
+  const actorName = optionalBoundedString(value, 'actorName', 120)
+  const text = value.text
+  if (typeof text !== 'string' || text.length > 8_000) throw new Error(`mattermostContext[${index}].text is invalid`)
+  if (typeof value.isBot !== 'boolean') throw new Error(`mattermostContext[${index}].isBot must be a boolean`)
+  return {
+    postId: requiredString(value, 'postId'),
+    actorId: requiredString(value, 'actorId'),
+    ...(actorName === undefined ? {} : { actorName }),
+    text,
+    timestamp: requiredTimestamp(value, 'timestamp'),
+    isBot: value.isBot,
   }
 }
 
@@ -83,14 +132,31 @@ export function assertInboundEnvelope(value: unknown): InboundEnvelope {
   }
   const attachments = value.attachments
   if (!Array.isArray(attachments)) throw new Error('attachments must be an array')
+  const rawWeixinMediaSources = value.weixinMediaSources
+  if (rawWeixinMediaSources !== undefined && (platform !== 'weixin' || !Array.isArray(rawWeixinMediaSources) || rawWeixinMediaSources.length > 8)) {
+    throw new Error('weixinMediaSources is invalid for this platform or exceeds the attachment limit')
+  }
   if (typeof value.isBotMentioned !== 'boolean') throw new Error('isBotMentioned must be a boolean')
   if (typeof value.isBotMessage !== 'boolean') throw new Error('isBotMessage must be a boolean')
 
   const channelId = optionalString(value, 'channelId')
+  const isChannelConversation = value.isChannelConversation
+  if (isChannelConversation !== undefined && (typeof isChannelConversation !== 'boolean' || platform !== 'mattermost')) {
+    throw new Error('isChannelConversation is invalid for this platform')
+  }
+  if (isChannelConversation === true && conversationType !== 'thread') throw new Error('Mattermost channel messages must be normalized to a thread source')
   const replyToMessageId = optionalString(value, 'replyToMessageId')
   const actorName = optionalString(value, 'actorName')
   const replyContextToken = optionalString(value, 'replyContextToken')
   const rawEventVersion = optionalString(value, 'rawEventVersion')
+  const rawMattermostContext = value.mattermostContext
+  if (rawMattermostContext !== undefined && (platform !== 'mattermost' || !Array.isArray(rawMattermostContext) || rawMattermostContext.length > 60)) {
+    throw new Error('mattermostContext is invalid for this platform or exceeds its limit')
+  }
+  const mattermostContextRounds = value.mattermostContextRounds
+  if (mattermostContextRounds !== undefined && (platform !== 'mattermost' || !Number.isSafeInteger(mattermostContextRounds) || (mattermostContextRounds as number) < 0 || (mattermostContextRounds as number) > 10)) {
+    throw new Error('mattermostContextRounds is invalid for this platform')
+  }
   return {
     platform,
     accountId,
@@ -101,6 +167,7 @@ export function assertInboundEnvelope(value: unknown): InboundEnvelope {
     conversationId,
     conversationKey,
     ...(channelId === undefined ? {} : { channelId }),
+    ...(isChannelConversation === true ? { isChannelConversation: true } : {}),
     ...(threadRootId === undefined ? {} : { threadRootId }),
     ...(replyToMessageId === undefined ? {} : { replyToMessageId }),
     actorId: requiredString(value, 'actorId'),
@@ -110,6 +177,9 @@ export function assertInboundEnvelope(value: unknown): InboundEnvelope {
     isBotMentioned: value.isBotMentioned,
     isBotMessage: value.isBotMessage,
     attachments: attachments.map(readAttachment),
+    ...(rawWeixinMediaSources === undefined ? {} : { weixinMediaSources: rawWeixinMediaSources.map(readWeixinMediaSource) }),
+    ...(rawMattermostContext === undefined ? {} : { mattermostContext: rawMattermostContext.map(readMattermostContextPost) }),
+    ...(mattermostContextRounds === undefined ? {} : { mattermostContextRounds: mattermostContextRounds as number }),
     platformTimestamp: requiredTimestamp(value, 'platformTimestamp'),
     receivedAt: requiredTimestamp(value, 'receivedAt'),
     ...(replyContextToken === undefined ? {} : { replyContextToken }),

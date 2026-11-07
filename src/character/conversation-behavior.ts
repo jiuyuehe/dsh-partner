@@ -55,6 +55,11 @@ export function renderTaskConversationGuidance(): string {
   return '【任务回应流程】私聊执行工具任务前，用 partner_chat_say（beforeTools:true，expectedTools 为真实工具名）按角色自然接一句，确认送达后继续做事，不重复开场；新增工具通过 expectedTools 登记。执行中与结果回复仍是同一个角色，流程只规定操作与投递，不规定道歉、汇报或解释的语气。具体参数与交付方式按需查看工具说明。'
 }
 
+/** 渠道澄清通过原消息渠道往返，避免等待只能由 DSH 页面回答的交互工具。 */
+export function renderChannelQuestionGuidance(): string {
+  return '【渠道消息处理规则】本轮最后一条渠道用户消息是当前请求；先直接回应它。像“你好”这样的问候应自然问候，不要从旧历史推断出新的任务。不要调用 ask_user_question 等等待 DSH 页面输入的工具；如果确实缺少完成任务所需的信息，用 partner_chat_reply 在当前原渠道发出简短、具体的澄清问题并结束本轮。用户后续消息会进入同一渠道会话，再继续处理。若会话历史里有旧的 ask_user_question、时区确认或其他等待 DSH 页面输入的请求，那是已经过期的历史状态，不是当前用户的新指令；不要续问或重复它，优先回应最新一条渠道消息。'
+}
+
 /** Delivery policy, not a replacement persona. Explicit requests override defaults. */
 export function renderReplyRhythm(card?: CharacterCard): string {
   return [

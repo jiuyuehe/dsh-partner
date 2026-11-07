@@ -86,7 +86,7 @@ test('attachment counts, declared sizes, streamed sizes, redirects and abort are
 
 test('Mattermost preserves attachment captions and checks file ownership before downloading', async t => {
   let wrong = false
-  const s = await server(t,r => r.path.includes('/posts?') ? {order:['post'],posts:{post:{id:'post',user_id:'peer',message:'看附件',file_ids:[fileId],create_at:100}}} : r.path.endsWith('/info') ? {id:fileId,post_id:wrong?'other':'post',name:'voice.ogg',mime_type:'audio/ogg',size:5} : {raw:Buffer.from('audio')})
+  const s = await server(t,r => r.path.includes('/posts?') ? {order:['post'],posts:{post:{id:'post',user_id:'peer',message:'看附件',file_ids:[fileId],create_at:100}}} : r.path.endsWith('/info') ? {id:fileId,post_id:wrong?'other':'post',channel_id:'dm',name:'voice.ogg',mime_type:'audio/ogg',size:5} : {raw:Buffer.from('audio')})
   const api = new DirectTransport({platform:'mattermost',baseUrl:s.url,targetId:'dm'},'secret')
   const [message] = (await api.poll('1',signal())).messages
   assert.equal(message.text,'看附件'); assert.equal(message.media.length,1)
@@ -123,8 +123,13 @@ test('revocation after upload prevents sending; symlinks and unacknowledged send
   const f=await file(t)
   await assert.rejects(api.sendAttachment(peer,f,undefined,signal(),()=>allowed),/撤销/)
   assert.equal(s.requests.some(r=>r.path.includes('/send/')),false)
-  await symlink(f.path,f.path+'.link')
-  await assert.rejects(api.sendAttachment(peer,{...f,path:f.path+'.link'},undefined,signal()))
+  try {
+    await symlink(f.path,f.path+'.link')
+    await assert.rejects(api.sendAttachment(peer,{...f,path:f.path+'.link'},undefined,signal()))
+  } catch (error) {
+    // Windows 未授予符号链接权限时，仅跳过无法创建的链接样例，继续验证发送回执。
+    if (process.platform !== 'win32' || error?.code !== 'EPERM') throw error
+  }
   const s2=await server(t,r=>r.path.includes('/upload')?{content_uri:'mxc://local/file'}:{})
   await assert.rejects(new DirectTransport({platform:'matrix',baseUrl:s2.url,targetId:room},'secret').sendAttachment(peer,f,undefined,signal()),/未确认/)
 })

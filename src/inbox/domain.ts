@@ -27,6 +27,28 @@ export interface InboundAttachment {
   sizeBytes?: number
 }
 
+/** Mattermost thread 历史只包含经服务端读取的纯文本元数据；作为引用上下文注入用户消息。 */
+export interface MattermostContextPost {
+  postId: string
+  actorId: string
+  actorName?: string
+  text: string
+  timestamp: number
+  isBot: boolean
+}
+
+/** 微信附件续读所需的短期 CDN 引用；属于渠道敏感数据，不能写入提示词或诊断日志。 */
+export interface WeixinMediaSource {
+  kind: 'image' | 'file'
+  fileName?: string
+  contentType?: string
+  imageAesKey?: string
+  fullUrl?: string
+  encryptQueryParam?: string
+  aesKey?: string
+  encryptType?: number
+}
+
 /** Normalized platform event. replyContextToken is routing-only and must never enter model input or logs. */
 export interface InboundEnvelope {
   platform: ChannelPlatform
@@ -38,6 +60,8 @@ export interface InboundEnvelope {
   conversationId: string
   conversationKey: ConversationKey
   channelId?: string
+  /** 区分 Mattermost 频道和双人 DM 中的线程，权限模型不同。 */
+  isChannelConversation?: boolean
   threadRootId?: string
   replyToMessageId?: string
   actorId: string
@@ -47,11 +71,17 @@ export interface InboundEnvelope {
   isBotMentioned: boolean
   isBotMessage: boolean
   attachments: InboundAttachment[]
+  /** 仅供微信 Adapter 在重启后下载附件，不得暴露给 Agent。 */
+  weixinMediaSources?: WeixinMediaSource[]
   platformTimestamp: number
   receivedAt: number
   /** WeChat reply routing only. Do not expose this value to the Agent or logs. */
   replyContextToken?: string
   rawEventVersion?: string
+  /** 经过频道/线程来源验证的有限历史，不包含 token、文件 URL 或原始 API 对象。 */
+  mattermostContext?: MattermostContextPost[]
+  /** Mattermost 按渠道配置注入的历史轮数；只影响提示结构，不参与路由或授权。 */
+  mattermostContextRounds?: number
 }
 
 export type OutboundTarget =
@@ -149,6 +179,8 @@ export type CursorType = 'timestamp' | 'opaque-buffer'
 
 export interface ChannelCursor {
   channelConfigId: string
+  /** 微信和旧 Mattermost DM 使用空作用域；每个 Mattermost 频道使用独立 scopeId。 */
+  scopeId?: string
   platform: ChannelPlatform
   cursorType: CursorType
   cursorJson: string

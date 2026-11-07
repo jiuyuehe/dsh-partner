@@ -58,11 +58,16 @@ test('QQ input during silent autonomous work starts an owned reply and delivers 
  await tick();assert.deepEqual(sent,[])
  autonomy.resolve();await started.promise
  assert.deepEqual(sent,['这回我照着原来的样子画张近照，等着看吧。','image generated','image sent'])
- let steered
- agent.steer=message=>{steered=message}
+ assert.ok(manager.channelDiagnostics().some(item=>item.phase==='agent-followup-starting'))
+ assert.ok(manager.channelDiagnostics().some(item=>item.phase==='agent-followup-submitted'))
+ const steered=[]
+ agent.steer=message=>{steered.push(message)}
+ // 同一个活跃 Agent 可以连续接收多条 Mattermost 风格的插入输入，不等待前一轮结束。
  assert.equal(await runtime.steer(companion,channel.id,route.userId,{text:'背景也保持原样',attachments:[]}),true)
- assert.equal(steered.content[0].text,'背景也保持原样')
+ assert.equal(await runtime.steer(companion,channel.id,route.userId,{text:'最后保留原来的构图',attachments:[]}),true)
+ assert.deepEqual(steered.map(message=>message.content[0].text),['背景也保持原样','最后保留原来的构图'])
  finish.resolve();await pending
+ assert.ok(manager.channelDiagnostics().some(item=>item.phase==='agent-followup-completed'))
  assert.equal(sent.at(-1),'画好啦，看这次的表情。')
  assert.equal(runtime.channelReplyOwners.size,0)
  assert.equal(scope.ctx.tools.get('partner_chat_progress',agent),undefined)

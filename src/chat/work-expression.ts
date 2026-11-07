@@ -152,7 +152,7 @@ export async function composeWorkExpression(ctx: Context, owner: string, store: 
   }
   const evidence = selectWorkEvidence(workExpressionEvidence(events, start), selection)
   if (!evidence.reports.length) throw Error('当前回合没有可引用的工作结果')
-  if (!companion?.characterCard?.enabled) throw Error('角色聊天已停用')
+  if (!companion?.characterCard?.enabled) throw Error('workReply 交接需要启用角色聊天增强；请改用 messages 直接提交普通回复。')
   if (companion.characterCard.exclusivePrompt) throw Error('独占系统提示已开启：请在原对话直接使用 messages 回复，workReply 未执行、未发送。')
   const config = [...events].reverse().find(e => e.type === 'request/header')?.data.header.config
   const llm = ctx.llm

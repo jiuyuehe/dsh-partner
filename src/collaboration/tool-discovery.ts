@@ -4,7 +4,7 @@ import type {ToolDefinition,ToolRuntime,ToolRunContext,ToolExecutionResult} from
 import {ToolCallId} from '@deepseek-ai/dsh-llm'
 import {scopeTarget} from '@deepseek-ai/dsh-scope'
 import type {PartnerStore} from '../store.js'
-import {resolveToolAccess} from '../execution/tool-access-adapter.js'
+import {resolveToolAccess,isToolAllowed} from '../execution/tool-access-adapter.js'
 import {discoveredToolProtocol} from '../character/prompt-projection.js'
 
 export interface DiscoverableTool {tool:ToolDefinition;allowed:()=>boolean;protocol?:(exec:ToolRunContext)=>string}
@@ -37,7 +37,7 @@ function category(name:string):string {
  if(['generate_image','image_gen.imagegen'].includes(name))return 'media'
  if(['partner_chat_reply','partner_agreement','partner_chat_say','partner_chat_progress','partner_stickers','partner_qq_reply'].includes(name))return 'chat'
  if(/identity|affection|thoughts|sleep|avatar|activity/.test(name))return 'identity'
- if(/task_board|requirements|collaborate|work_execute|workflow/.test(name))return 'work'
+ if(/task_board|requirements|collaborate|work_execute|code_execute|code_status|workflow/.test(name))return 'work'
  if(/schedule/.test(name))return 'automation'
  if(/skill/.test(name))return 'skills'
  if(/companions|management|access_grants|companion_manage/.test(name))return 'management'
@@ -69,7 +69,8 @@ export function installToolDiscovery(runtime:ToolRuntime,owner:string,store:Part
   const access=resolveToolAccess({agent:exec.agent!,state:store.snapshot()})
   const tools=new Map<string,ToolDefinition>()
   for(const entry of entries){const tool=runtime.get(entry.tool.name,exec.agent);if(entry.allowed()&&tool)tools.set(tool.name,tool)}
-  return [...tools.values()].filter(tool=>!['partner_tools','partner_channel_access','run_code'].includes(tool.name)&&access.sendTools&&(!access.allowedTools||access.allowedTools.includes(tool.name)))
+  // 统一目录与顶层模型工具采用同一过滤规则，不暴露渠道不可等待的页面提问工具。
+  return [...tools.values()].filter(tool=>!['partner_tools','partner_channel_access','run_code'].includes(tool.name)&&isToolAllowed(access,tool.name))
  }
  const visible=(tool:ToolDefinition)=>({name:tool.name,category:category(tool.name),summary:(['generate_image','image_gen.imagegen'].includes(tool.name)?'生图、画图、图生图、图片编辑。'+tool.description:tool.description).slice(0,160)})
  const render=(_args:unknown,value:unknown)=>{

@@ -91,7 +91,7 @@ test('original runtime guards still deny nested work operations; no chat or recu
  f.scope.ctx.tools.guard(e=>e.name==='blocked_operation'?'policy denied':undefined)
  f.setDriver(async({invoke})=>{
   assert.equal((await call(invoke,'blocked_operation')).value.dispatch.isError,true)
-  for(const name of ['partner_chat_reply','partner_agreement','partner_chat_say','partner_chat_progress','partner_qq_reply','partner_sleep','partner_work_execute','run_code','partner_tools'])assert.equal((await call(invoke,name)).isError,true)
+   for(const name of ['partner_chat_reply','partner_agreement','partner_chat_say','partner_chat_progress','partner_qq_reply','partner_sleep','partner_work_execute','partner_code_execute','partner_code_status','run_code','partner_tools'])assert.equal((await call(invoke,name)).isError,true)
   await invoke('partner_work_result',{...result,status:'blocked',facts:[],unknowns:['权限拒绝']})
  })
  const output=await f.invoke('partner_work_execute',{input:'任务'});assert.equal(output.isError,false);assert.equal(calls,0)
