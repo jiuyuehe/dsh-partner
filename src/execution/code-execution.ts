@@ -188,7 +188,7 @@ function readStatusArgs(raw: unknown) {
 export function partnerCodeExecutionTools(owner: string, store: PartnerStore, options: CodeExecutionOptions = {}): ToolDefinition[] {
   const execute: ToolDefinition = {
     name: 'partner_code_execute',
-    description: '用于代码任务（读取/修改仓库或文件、修复代码、编写/运行测试、构建、调试和代码审查）；用户明确要求 Codex CLI/Codex 子 Agent 完成其他任务时也使用本工具。通过 DSH 官方 Codex Provider 在当前 DSH 会话工作目录真实执行，结果回到本 Agent。Codex 缺失、认证失败或执行失败时明确失败并停止；不得改用 partner_work_execute、临时 DSH Agent 或自己伪称已委派。参数不接受工作目录，工作区始终由插件从当前 Session 确定；使用 Provider 当前配置的 Codex 模型，不得声称切换到了其他 DSH 模型。',
+    description: '用于代码任务（读取/修改仓库或文件、修复代码、编写/运行测试、构建、调试和代码审查）；用户点名 Codex 并提出具体交付任务时（包括“你现在能让 Codex 写诗了吗？”这类能力问句）也使用本工具，除非用户明确只问能力。通过 DSH 官方 Codex Provider 在当前 DSH Agent 会话中真实执行并把结果返回原会话，不另开 Codex 会话。Codex 缺失、认证失败或执行失败时明确失败并停止；不得改用 partner_work_execute、宿主 subagent_codex、临时 DSH Agent 或自己伪称已委派。参数不接受工作目录，工作区始终由插件从当前 Session 确定；使用 Provider 当前配置的 Codex 模型，不得声称切换到了其他 DSH 模型。',
     parameters: {
       type: 'object', additionalProperties: false,
       properties: {

@@ -113,11 +113,12 @@ test('tool guidance connects requests, specialists and the planning Skill withou
   }, store.snapshot().companions[0])
   assert.deepEqual([...tools.keys()].sort(), ['partner_activity_finish', 'partner_affection', 'partner_code_execute', 'partner_code_status', 'partner_collaborate', 'partner_identity', 'partner_requirements', 'partner_skill', 'partner_task_board', 'partner_thoughts', 'partner_work_execute', 'partner_workflow'])
   for (const name of [...tools.keys()].filter(name => !['partner_thoughts', 'partner_affection', 'partner_identity', 'partner_activity_finish', 'partner_code_execute', 'partner_code_status', 'partner_work_execute', 'partner_workflow'].includes(name))) assert.match(tools.get(name).description, /enabled task-planning Skill/)
-  assert.match(tools.get('partner_code_execute').description, /用户明确要求 Codex CLI\/Codex 子 Agent.*也使用本工具/)
+  assert.match(tools.get('partner_code_execute').description, /用户点名 Codex 并提出具体交付任务.*能力问句/)
   assert.match(sections.map(section => section.text).join('\n'), /失败时明确报告并停止/)
   assert.match(sections.map(section => section.text).join('\n'), /直接调用顶层 partner_code_execute/)
   assert.doesNotMatch(sections.map(section => section.text).join('\n'), /当前伙伴作用域中的 subagent_codex 是插件提供/)
-  assert.match(sections.map(section => section.text).join('\n'), /用户明确要求 Codex CLI\/Codex 子 Agent 完成的其他任务.*包括写作、分析等/s)
+  assert.match(sections.map(section => section.text).join('\n'), /“你现在能让 Codex 写诗了吗？”这样的能力问句，也要执行写诗/s)
+  assert.match(sections.map(section => section.text).join('\n'), /Codex 具体交付任务，必须调用插件自有的 partner_code_execute/)
   assert.match(tools.get('partner_task_board').description, /no explicit @ or board request/)
   assert.match(tools.get('partner_collaborate').description, /do not duplicate already-assigned work/)
   assert.equal(sections.some(section => section.name.includes('preflight')), false)
@@ -172,10 +173,7 @@ test('unified tool discovery routes Codex work through the plugin gateway, witho
   const visibleTopLevel = [...registered.values()].filter(tool => PARTNER_TOOL_ENTRIES.includes(tool.name) || !isPartnerDiscoveryTool(store, companion.id, tool.name))
   assert.equal(visibleTopLevel.some(tool => tool.name === 'partner_code_execute'), false, 'internal code tool is removed from the model-facing top-level list')
   assert.equal(visibleTopLevel.some(tool => tool.name === 'subagent_codex'), false, 'the host tool is not added to the partner plugin top-level list')
-  const listed = await registered.get('partner_tools').execute({ action: 'list', category: 'work', query: 'partner_code_execute' }, {
-    agent, signal: new AbortController().signal, callId: 'list-code-tool',
-  })
-  assert.ok(listed.tools.some(tool => tool.name === 'partner_code_execute'))
+  assert.match(registered.get('partner_tools').description, /用户点名 Codex.*直接 action=call.*partner_code_execute.*不先 list\/describe\/load/)
   const task = { task: '请用 Codex 写一首夏日诗。', acceptanceCriteria: ['由 Codex 返回最终诗作'] }
   const dispatched = await registered.get('partner_tools').execute({
     action: 'call', name: 'partner_code_execute', argumentsJson: JSON.stringify(task),
@@ -184,10 +182,15 @@ test('unified tool discovery routes Codex work through the plugin gateway, witho
   assert.equal(dispatched.dispatch.isError, false)
   assert.match(dispatched.dispatch.content[0].text, /夏日诗作已返回/)
   assert.ok(sessionEvents.some(event => event.type === 'tool/ptc-dispatch-start' && event.data.name === 'partner_code_execute'))
+  const listed = await registered.get('partner_tools').execute({ action: 'list', category: 'work', query: 'partner_code_execute' }, {
+    agent, signal: new AbortController().signal, callId: 'list-code-tool',
+  })
+  assert.ok(listed.tools.some(tool => tool.name === 'partner_code_execute'), 'direct Codex execution does not require a list preflight')
   const prompt = sections.map(section => section.text).join('\n')
   assert.match(prompt, /统一工具入口：通过顶层 partner_tools 直接执行 action=call，name=partner_code_execute/)
   assert.match(prompt, /不要调用 DSH 宿主的 subagent_codex、job_output 或 job_list/)
   assert.match(prompt, /需要查询运行记录时也通过 partner_tools action=call 调用 partner_code_status/)
+  assert.ok(prompt.indexOf('【Codex 执行意图】') < prompt.indexOf('普通伙伴工具需要查找时'), 'Codex direct execution takes priority over ordinary directory discovery')
 })
 
 test('one authorized specialist deliverable dispatches without artificial decomposition and hides disabled capabilities', async t => {

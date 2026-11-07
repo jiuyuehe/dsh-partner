@@ -43,7 +43,7 @@ test('partner_code_execute sends the real current workspace to the Codex activat
   }
   const [execute, status] = f.tools
   assert.equal(execute.name, 'partner_code_execute')
-  assert.match(execute.description, /用户明确要求 Codex CLI\/Codex 子 Agent 完成其他任务时也使用本工具/)
+  assert.match(execute.description, /用户点名 Codex 并提出具体交付任务时.*能力问句/)
   assert.deepEqual(execute.parameters.required, ['task'])
   assert.equal(execute.parameters.properties.cwd, undefined)
   const output = await execute.execute({ task: 'Read README and run the unit test.', acceptanceCriteria: ['Report exact command and result'] }, f.exec)

@@ -4,7 +4,7 @@ import {workflowProtocol} from './workflow-protocols.js'
 import {workExecutionTool} from '../execution/work-tool.js'
 import {partnerCodeExecutionTools} from '../execution/code-execution.js'
 import { idleActivityFinishTool } from '../character/activity-tool.js'
-import {installToolDiscovery,TOOL_DISCOVERY_PROMPT,type DiscoverableTool} from './tool-discovery.js'
+import {CODE_EXECUTION_INTENT_GUIDANCE,installToolDiscovery,TOOL_DISCOVERY_PROMPT,type DiscoverableTool} from './tool-discovery.js'
 import { identityTool } from '../companions/identity-tool.js'
 import type { Context } from '@deepseek-ai/cordis'
 import { continuationChannelOrigin } from '../scheduler/channel-origin.js'
@@ -33,8 +33,8 @@ type AgentCompositionContext = Context & { tools: ToolRuntime }
 
 // Codex 委派必须经过插件自己的代码执行入口，避免与 DSH 宿主同名工具冲突。
 function codeExecutionGuidance(toolDiscovery: boolean): string {
-  const codexRoute = '代码任务，以及用户明确要求 Codex CLI/Codex 子 Agent 完成的其他任务（包括写作、分析等），必须调用插件自有的 partner_code_execute。它通过 DSH 官方 Codex Provider 同步等待结果并将真实输出返回当前会话；工作目录由插件根据当前 DSH 路由验证。不要调用 DSH 宿主的 subagent_codex、job_output 或 job_list；它们不是本插件的执行与结果查询通道。不要自行拼接 cwd。失败时明确报告并停止，不回退到 partner_work_execute、临时 DSH Agent 或自行声称已委派。'
-  if (toolDiscovery) return codexRoute + ' 当前伙伴启用了统一工具入口：通过顶层 partner_tools 直接执行 action=call，name=partner_code_execute，argumentsJson 为原工具参数的 JSON 字符串（例如 {"task":"用户要求的 Codex 任务","acceptanceCriteria":["真实执行并返回结果"]}）。不要先用目录查询替代执行；需要查询运行记录时也通过 partner_tools action=call 调用 partner_code_status。其他伙伴内部工具继续经 partner_tools；没有明确指定 Codex 的非代码调查、排障或多步执行使用顶层 partner_work_execute；已有看板或委派沿用原任务。普通接话、概念讨论和轻量操作直接处理。'
+  const codexRoute = CODE_EXECUTION_INTENT_GUIDANCE + ' 代码任务，以及 Codex 具体交付任务，必须调用插件自有的 partner_code_execute。它通过 DSH 官方 Codex Provider 在当前 DSH Agent 里启动、同步等待并将真实结果返回当前会话；工作目录由插件根据当前 DSH 路由验证。不要调用 DSH 宿主的 subagent_codex、job_output 或 job_list；它们不是本插件的执行与结果查询通道。不要自行拼接 cwd。失败时明确报告并停止，不回退到 partner_work_execute、临时 DSH Agent 或自行声称已委派。'
+  if (toolDiscovery) return codexRoute + ' 当前伙伴启用了统一工具入口：通过顶层 partner_tools 直接执行 action=call，name=partner_code_execute，argumentsJson 为原工具参数的 JSON 字符串（例如 {"task":"用户要求的 Codex 任务","acceptanceCriteria":["真实执行并返回结果"]}）。不要先 list、describe 或 load；需要查询运行记录时也通过 partner_tools action=call 调用 partner_code_status。其他伙伴内部工具继续经 partner_tools；没有明确指定 Codex 的非代码调查、排障或多步执行使用顶层 partner_work_execute；已有看板或委派沿用原任务。普通接话、概念讨论和轻量操作直接处理。'
   return codexRoute + ' 当前伙伴未启用统一工具入口时，直接调用顶层 partner_code_execute，参数使用 task（可选 acceptanceCriteria、timeoutSeconds）。需要查询运行记录时直接调用 partner_code_status。没有明确指定 Codex 的非代码调查、排障或多步执行使用 partner_work_execute；已有看板或委派沿用原任务。普通接话、概念讨论和轻量操作直接处理。'
 }
 

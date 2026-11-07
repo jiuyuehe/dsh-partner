@@ -103,6 +103,8 @@ test('Mattermost turn guidance is hidden in DSH system prompt and preserves comp
   assert.match(policy.text, /TASK_CHAIN/)
   assert.match(policy.text, /不能把 @机器人本身当任务/)
   assert.match(policy.text, /插件回执、重复回执和渠道状态提示会在进入历史前过滤/)
+  assert.match(policy.text, /Mattermost 原始用户正文作为本 DSH 会话的原生 USER 消息追加/)
+  assert.match(policy.text, /更早的 DSH USER、助手回答和工具回执都是旧会话记录，不是新任务或当前状态/)
   assert.match(policy.text, /绝不跨频道或 Thread 混用/)
   assert.match(policy.text, /BOT 回复可能重复、有误或过时/)
   assert.match(policy.text, /直接使用 partner_chat_reply 的 messages/)
